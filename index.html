@@ -13,7 +13,7 @@
       <h1>Kontrola materiałowa projektu</h1>
       <p class="subtitle">Konstrukcja → ZDWP → zasoby → RW/ZKP → raport przed kompletacją</p>
     </div>
-    <div class="privacy">Dane są analizowane lokalnie w przeglądarce</div>
+    <div class="privacy">Dane są analizowane lokalnie w przeglądarce<br><span id="masterDbStatus">Baza indeksów: ładowanie…</span></div>
   </header>
 
   <main class="container">
@@ -91,8 +91,8 @@
 
       <div class="toolbar card compact">
         <div class="filters">
-          <label><input type="checkbox" id="hideOk" checked> Ukryj pozycje OK</label>
-          <label><input type="checkbox" id="showExtras"> Pokaż materiały systemowe spoza konstrukcji</label>
+          <strong>Raport pokazuje tylko różnice</strong>
+          <label><input type="checkbox" id="showExtras" checked> Pokaż także materiały systemowe spoza konstrukcji</label>
         </div>
         <input id="searchInput" class="search" placeholder="Szukaj indeksu / materiału…" />
       </div>
@@ -131,7 +131,7 @@
   </main>
 
   <footer>
-    Wersja próbna v0.1 — silnik uzgodnienia materiałowego przed KPLW.
+    Wersja próbna v0.2 — raport różnic z bazą indeksów i tolerancjami materiałowymi.
   </footer>
 
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>

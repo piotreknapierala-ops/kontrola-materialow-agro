@@ -1,35 +1,28 @@
-# AGRO — kontrola materiałowa projektu (v0.1)
+# AGRO — kontrola materiałowa projektu (v0.2)
 
-Statyczna aplikacja przeglądarkowa do raportu przed kompletacją KPLW.
+Statyczna aplikacja przeglądarkowa do raportu materiałowego przed kompletacją KPLW.
 
-## Uruchomienie
+## Co zmieniono w v0.2
 
-Najprościej wrzucić cały folder na GitHub Pages. `index.html`, `styles.css` i `app.js` muszą leżeć obok siebie.
+- stała baza 17 696 unikatowych indeksów (`indeksy.json`) z nazwą, jednostką systemową i kategorią,
+- raport główny pokazuje tylko różnice / pozycje wymagające reakcji,
+- eksport Excel również nie zawiera pozycji OK,
+- małe nadwyżki są ignorowane według tolerancji zależnych od kategorii i jednostki,
+- dla kategorii `złączne` w sztukach: dopuszczalna nadwyżka do 5%, minimum 2 szt., maksymalnie 10 szt.; niedobór pozostaje rygorystyczny,
+- dla pozostałych pozycji w sztukach: nadwyżka do 2%, minimum 1 szt., maksymalnie 5 szt.,
+- dla kg/m/m2/m3/t/l: nadwyżka do 2% (minimum 0,1 jednostki),
+- dla blach masa z konstrukcji nadal jest traktowana jako minimum i ma osobną logikę weryfikacji.
 
-Aplikacja korzysta z:
-- SheetJS CE 0.20.3 (odczyt i eksport XLSX),
-- libarchive.js 2.0.2 (próba rozpakowania 7z w przeglądarce).
+Przykład: konstrukcja wymaga 250 śrub, a pod projektem jest 260 szt. — status OK i pozycja nie trafia do raportu różnic. 249 szt. — niedobór i pozycja trafia do raportu.
 
-Dane z arkuszy są przetwarzane po stronie przeglądarki. Aplikacja nie ma backendu.
+## Publikacja GitHub Pages
 
-## Logika v0.1
+W katalogu głównym repozytorium powinny znajdować się obok siebie:
 
-- Projekt jest normalizowany do formatu `P/000/00`.
-- Nazwa projektu jest uczona z pola `Projekt26` i zapisywana w `localStorage`.
-- Systemowe ruchy są rozpoznawane po prefiksach dokumentów: ZKP/KZKP, RW, ZDWP, KPLW.
-- ZKP/KZKP i RW: ilość z `Zmiana ilości`.
-- ZDWP jest informacyjne i nie jest dodawane do zużycia/stanu.
-- KPLW jest wykrywane, ale pomijane w raporcie przed kompletacją.
-- Zasoby są dzielone na `Produkcja wyposażenia` i `Materiały wyposażenia`.
-- Dla zasobów `NrZAMP` (kolumna L) jest traktowany jako bieżące przypisanie do projektu, a `Projekt26` jako informacja o pochodzeniu. Pozwala to zachować przesunięcia z innych projektów bez gubienia ich w bilansie.
-- Rozpiski Cięte/Laser 3D/Toczone są sumowane po indeksie. Jeżeli system prowadzi materiał w kg, aplikacja próbuje wyznaczyć kg/m z mas i długości w BOM.
-- Laser 3D może być automatycznie wyłączony z kontroli materiałowej, gdy w ZDWP zostanie wykryta usługa `PALENIE LASEREM 3D`; można to ręcznie nadpisać.
-- Laser 2D zawsze zakłada nasz materiał. Blachy są wiązane z indeksami systemowymi po grubości/gatunku, a konstrukcja daje minimalną masę netto detali. Bez rozkroju aplikacja nie uznaje nadwyżki nad masą detali automatycznie za błąd.
+- `index.html`
+- `styles.css`
+- `app.js`
+- `indeksy.json`
+- `README.md`
 
-## Baza
-
-Aplikacja uczy się lokalnie:
-- numer projektu → nazwa,
-- indeks → nazwa systemowa + jednostka.
-
-Przyciski `Eksport bazy` / `Import bazy` pozwalają przenieść tę wiedzę na inny komputer lub przeglądarkę.
+Dane z wgrywanych arkuszy są analizowane lokalnie w przeglądarce. Aplikacja nie ma backendu.

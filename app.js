@@ -19,6 +19,8 @@ const state = {
   projects: loadJson(STORAGE_KEYS.projects, {}),
   items: loadJson(STORAGE_KEYS.items, {}),
   analysis: null,
+  masterItems: {},
+  masterLoaded: false,
 };
 
 function loadJson(key, fallback) {
@@ -28,6 +30,37 @@ function saveDb() {
   localStorage.setItem(STORAGE_KEYS.projects, JSON.stringify(state.projects));
   localStorage.setItem(STORAGE_KEYS.items, JSON.stringify(state.items));
   refreshProjectHints();
+}
+
+function itemRecord(code) {
+  code=normalizeCode(code);
+  const learned=state.items[code] || {};
+  const master=state.masterItems[code] || {};
+  return {
+    name: master.name || learned.name || '',
+    unit: (master.unit || learned.unit || '').toLowerCase(),
+    category: master.category || learned.category || '',
+    sources: learned.sources || []
+  };
+}
+function itemExists(code) { code=normalizeCode(code); return !!(state.masterItems[code] || state.items[code]); }
+function *allItemEntries() {
+  const seen=new Set();
+  for(const [code,rec] of Object.entries(state.masterItems)){ seen.add(code); yield [code,rec]; }
+  for(const [code] of Object.entries(state.items)){ if(!seen.has(code)) yield [code,itemRecord(code)]; }
+}
+async function loadMasterItems() {
+  try {
+    const r=await fetch(`indeksy.json?v=2`,{cache:'no-store'});
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    state.masterItems=await r.json();
+    state.masterLoaded=true;
+    const box=document.getElementById('masterDbStatus');
+    if(box) box.textContent=`Baza indeksów: ${Object.keys(state.masterItems).length.toLocaleString('pl-PL')} pozycji`;
+  } catch(err) {
+    state.warnings.push(`Nie załadowano stałej bazy indeksów: ${err.message}. Nazwy będą uzupełniane z eksportów systemowych.`);
+    renderWarnings();
+  }
 }
 
 function normalizeSpaces(v) { return String(v ?? '').replace(/\s+/g, ' ').trim(); }
@@ -140,7 +173,7 @@ function parseItemCell(v) {
 function normalizeCode(v) { return normalizeSpaces(v).replace(/\.0$/,''); }
 function rememberItem(code, name, unit, source='system') {
   code=normalizeCode(code); if(!code) return;
-  const rec=state.items[code] || {name:'',unit:'',sources:[]};
+  const rec=state.items[code] || {name:'',unit:'',category:'',sources:[]};
   if (name && (!rec.name || rec.name.length < name.length)) rec.name=normalizeSpaces(name);
   if (unit) rec.unit=normalizeSpaces(unit).toLowerCase();
   if (!rec.sources.includes(source)) rec.sources.push(source);
@@ -155,10 +188,10 @@ function resolveCode(raw, descriptor='') {
     if (/^\d+$/.test(p) && p.length<5) candidates.push(p.padStart(5,'0'));
     if (/^0+\d+$/.test(p)) candidates.push(p.replace(/^0+/,''));
   }
-  for(const c of candidates) if(state.items[c]) return {code:c, confidence:'exact', note:c!==s?`Indeks znormalizowany z ${s}`:''};
+  for(const c of candidates) if(itemExists(c)) return {code:c, confidence:'exact', note:c!==s?`Indeks znormalizowany z ${s}`:''};
   if (descriptor) {
     let best=null;
-    for(const [code,rec] of Object.entries(state.items)) {
+    for(const [code,rec] of allItemEntries()) {
       const score=itemSimilarity(descriptor, `${rec.name||''}`);
       if(score>=0.82 && (!best || score>best.score)) best={code,score};
     }
@@ -180,6 +213,7 @@ function matrixToRows(matrix) {
 }
 function hasHeaders(headers, required) { const S=new Set(headers); return required.every(x=>S.has(x)); }
 function classifySheet(headers, filename) {
+  if(hasHeaders(headers,['Kod','Nazwa','Jednostka','Kategoria']) && !headers.includes('Ilość zasobu')) return {kind:'master',label:'Baza indeksów'};
   if(hasHeaders(headers,['Kod','Nazwa','Ilość zasobu','Magazyn'])) return {kind:'resources',label:'Zasoby'};
   if(hasHeaders(headers,['Dokument','Towar','Zmiana ilości','Projekt26'])) return {kind:'system',label:'System: ZKP/RW/ZDWP/KPLW'};
   if(hasHeaders(headers,['Długość','Tworzywo','Ilość','Odpad','Etykieta'])) return {kind:'cutlist',label:`Rozpiska ${technologyFromName(filename)}`};
@@ -280,12 +314,18 @@ function learnFromDataset(ds) {
       if(current && current===source) rememberProject(current,projectNameFromCombined(r.Projekt26,current),'zasoby');
       rememberItem(r.Kod,r.Nazwa,r['Ilość zasobu Jednostka'],'zasoby');
     }
+  } else if(ds.kind==='master') {
+    for(const r of ds.rows) {
+      const code=normalizeCode(r.Kod); if(!code) continue;
+      state.masterItems[code]={name:normalizeSpaces(r.Nazwa),unit:normalizeSpaces(r.Jednostka).toLowerCase(),category:normalizeSpaces(r.Kategoria)};
+    }
+    state.masterLoaded=true;
   }
 }
 
 function renderFiles() {
-  const labels={system:'SYSTEM',resources:'ZASOBY',bom:'KONSTRUKCJA',cutlist:'ROZPISKA',mixed:'MIESZANY',archive:'7Z',error:'BŁĄD',pending:'…'};
-  const cls={system:'system',resources:'resource',bom:'construction',cutlist:'construction',mixed:'system',archive:'archive',error:'error',pending:''};
+  const labels={system:'SYSTEM',resources:'ZASOBY',bom:'KONSTRUKCJA',cutlist:'ROZPISKA',master:'BAZA INDEKSÓW',mixed:'MIESZANY',archive:'7Z',error:'BŁĄD',pending:'…'};
+  const cls={system:'system',resources:'resource',bom:'construction',cutlist:'construction',master:'resource',mixed:'system',archive:'archive',error:'error',pending:''};
   el.fileList.innerHTML=state.files.map(f=>`<div class="file-item"><div><strong title="${esc(f.name)}">${esc(f.name)}</strong><small>${esc(f.status||'')}</small></div><span class="tag ${cls[f.type]||''}">${labels[f.type]||f.type}</span></div>`).join('');
   if(state.files.length){
     const counts=state.datasets.reduce((a,d)=>(a[d.kind]=(a[d.kind]||0)+d.rows.length,a),{});
@@ -426,7 +466,7 @@ function constructionPurchasedRows(bomRows, sys, res) {
       const exact=[];
       for(const p of rawParts){
         const variants=[p]; if(/^\d+$/.test(p)&&p.length<5)variants.push(p.padStart(5,'0'));
-        const c=variants.find(x=>state.items[x]); if(c&&!exact.includes(c))exact.push(c);
+        const c=variants.find(x=>itemExists(x)); if(c&&!exact.includes(c))exact.push(c);
       }
       const evidenced=exact.filter(c=>sys.has(c)||res.has(c));
       codes=evidenced.length===1?evidenced:exact;
@@ -438,13 +478,14 @@ function constructionPurchasedRows(bomRows, sys, res) {
     }
     if(!codes.length) continue;
     const displayCode=codes.join(' / '); const key=codes.slice().sort().join('|');
-    const units=[...new Set(codes.map(c=>sys.get(c)?.unit||res.get(c)?.unit||state.items[c]?.unit||'').filter(Boolean))];
+    const units=[...new Set(codes.map(c=>sys.get(c)?.unit||res.get(c)?.unit||itemRecord(c)?.unit||'').filter(Boolean))];
     const unit=(units[0]||'szt').toLowerCase();
     let expected=total, conversion='ilość z BOM';
     if(unit==='kg') { const m=parseMassKg(r.Masa); if(m>0){expected=m*total;conversion='masa detalu × ilość';} }
     else if(unit==='m') { const l=parseLengthMm(r.Długość); if(l>0){expected=(l/1000)*total;conversion='długość detalu × ilość';} }
-    const names=codes.map(c=>state.items[c]?.name||sys.get(c)?.name||res.get(c)?.name||'').filter(Boolean);
-    if(!groups.has(key)) groups.set(key,{technology:'Zakupowe',code:displayCode,codes,name:names.join(' / ')||normalizeSpaces(r.Opis)||desc,unit,expected:0,notes:[],source:'BOM zakupowe',confidence});
+    const names=codes.map(c=>itemRecord(c)?.name||sys.get(c)?.name||res.get(c)?.name||'').filter(Boolean);
+    const categories=[...new Set(codes.map(c=>itemRecord(c)?.category||'').filter(Boolean))];
+    if(!groups.has(key)) groups.set(key,{technology:'Zakupowe',code:displayCode,codes,name:names.join(' / ')||normalizeSpaces(r.Opis)||desc,unit,category:categories.join(' / '),expected:0,notes:[],source:'BOM zakupowe',confidence});
     const g=groups.get(key); g.expected+=expected; if(resolverNote)g.notes.push(resolverNote); if(units.length>1)g.notes.push(`Alternatywne indeksy mają różne jednostki systemowe: ${units.join(', ')}.`); g.notes.push(conversion);
   }
   return [...groups.values()];
@@ -459,7 +500,7 @@ function constructionCutRows(cutRows, bomRows, sys, res, outsource3d) {
     const g=groups.get(key); g.lengthM+=parseLengthMm(r.Długość)/1000; g.stockPieces+=1; g.rows+=1; if(rr.note)g.notes.push(rr.note);
   }
   for(const g of groups.values()) {
-    const master=state.items[g.code]||{}, s=sys.get(g.code), z=res.get(g.code); g.name=master.name||s?.name||z?.name||g.cutDesc; g.unit=(s?.unit||z?.unit||master.unit||'').toLowerCase();
+    const master=itemRecord(g.code)||{}, s=sys.get(g.code), z=res.get(g.code); g.name=master.name||s?.name||z?.name||g.cutDesc; g.unit=(s?.unit||z?.unit||master.unit||'').toLowerCase(); g.category=master.category||'';
     if(g.technology==='Laser 3D' && outsource3d) { g.outsource=true; g.expected=null; g.notes.push('Laser 3D: usługa z materiałem wykonawcy — materiał nie jest wymagany w naszym RW/ZKP/zasobach.'); continue; }
     if(g.unit==='m') { g.expected=g.lengthM; g.conversion='suma długości handlowych z rozpiski'; }
     else if(g.unit==='szt') { g.expected=g.stockPieces; g.conversion='liczba odcinków handlowych z rozpiski'; }
@@ -508,11 +549,11 @@ function constructionSheetRows(bomRows, sys, res) {
   for(const g of groups.values()) {
     const candidates=[];
     for(const code of projectCodes) {
-      const name=state.items[code]?.name||sys.get(code)?.name||res.get(code)?.name||''; const sp=systemSheetSpec(name);
+      const name=itemRecord(code)?.name||sys.get(code)?.name||res.get(code)?.name||''; const sp=systemSheetSpec(name);
       if(sheetMatches(g.spec,sp)) candidates.push(code);
     }
-    const names=candidates.map(c=>state.items[c]?.name||sys.get(c)?.name||res.get(c)?.name||c);
-    out.push({technology:'Laser 2D / blachy',code:candidates.join(', ')||'—',codes:candidates,name:names.join(' | ')||`${g.spec.family} ${g.spec.grade} blacha ${g.spec.thickness} mm`,unit:'kg',expected:g.netMass,source:'BOM Laser 2D/Wykrawarka',confidence:candidates.length?'matched':'unknown',notes:[`Masa netto detali konstrukcyjnych: ${round(g.netMass,2)} kg.`,candidates.length?`Automatycznie przypisane indeksy systemowe: ${candidates.join(', ')}`:'Nie znaleziono indeksu blachy w ruchach/zasobach tego projektu.', 'Dla blach jest to minimum materiałowe; format arkusza i odpad technologiczny mogą zwiększyć prawidłową ilość systemową.', ...g.notes]});
+    const names=candidates.map(c=>itemRecord(c)?.name||sys.get(c)?.name||res.get(c)?.name||c);
+    out.push({technology:'Laser 2D / blachy',code:candidates.join(', ')||'—',codes:candidates,name:names.join(' | ')||`${g.spec.family} ${g.spec.grade} blacha ${g.spec.thickness} mm`,unit:'kg',category:candidates.map(c=>itemRecord(c)?.category||'').filter(Boolean).join(' / '),expected:g.netMass,source:'BOM Laser 2D/Wykrawarka',confidence:candidates.length?'matched':'unknown',notes:[`Masa netto detali konstrukcyjnych: ${round(g.netMass,2)} kg.`,candidates.length?`Automatycznie przypisane indeksy systemowe: ${candidates.join(', ')}`:'Nie znaleziono indeksu blachy w ruchach/zasobach tego projektu.', 'Dla blach jest to minimum materiałowe; format arkusza i odpad technologiczny mogą zwiększyć prawidłową ilość systemową.', ...g.notes]});
   }
   return out;
 }
@@ -524,21 +565,48 @@ function sourceValues(codeOrCodes, sys, res) {
   }
   return {zkp,rw,zdwp,kplw,prod,mat,other,total:zkp+rw+prod+mat,origins:[...origins],unit,name};
 }
+function normalizedUnit(u='') { return normalizeSpaces(u).toLowerCase().replace('szt.','szt'); }
+function isFastener(d) {
+  const cat=normText(d.category||''); const name=normText(d.name||'');
+  return cat.includes('zlaczne') || /\b(sruba|nakretka|podkladka|nit|wkret|sworzen|zawleczka)\b/.test(name);
+}
+function shortageTolerance(d) {
+  const e=Math.abs(Number(d.expected)||0), u=normalizedUnit(d.unit);
+  if(u==='szt' || u==='kpl' || u==='para' || u==='pud') return 0.0001;
+  return Math.max(0.01, e*0.005);
+}
+function surplusTolerance(d) {
+  const e=Math.abs(Number(d.expected)||0), u=normalizedUnit(d.unit);
+  if(u==='szt') {
+    if(isFastener(d)) return Math.min(10, Math.max(2, e*0.05));
+    return Math.min(5, Math.max(1, e*0.02));
+  }
+  if(u==='kpl' || u==='para') return 0.0001;
+  if(['kg','m','m2','m3','t','l'].includes(u)) return Math.max(0.1, e*0.02);
+  return Math.max(0.01, e*0.01);
+}
+function toleranceDescription(d) {
+  if(normalizedUnit(d.unit)==='szt' && isFastener(d)) return 'złączne: nadwyżka do 5%, min. 2 szt., maks. 10 szt.';
+  if(normalizedUnit(d.unit)==='szt') return 'sztuki: nadwyżka do 2%, min. 1 szt., maks. 5 szt.';
+  if(['kg','m','m2','m3','t','l'].includes(normalizedUnit(d.unit))) return 'jednostki ciągłe: nadwyżka do 2%';
+  return 'tolerancja standardowa';
+}
 function classifyResult(d, v) {
-  if(d.outsource) return {status:'OUTSOURCING 3D',class:'info',delta:null};
-  if(d.expected===null || d.expected===undefined || !Number.isFinite(d.expected)) return {status:'BRAK PRZELICZNIKA',class:'warn',delta:null};
-  const delta=v.total-d.expected, tol=Math.max(0.01,Math.abs(d.expected)*0.005);
+  if(d.outsource) return {status:'OUTSOURCING 3D',class:'info',delta:null,withinTolerance:false};
+  if(d.expected===null || d.expected===undefined || !Number.isFinite(d.expected)) return {status:'BRAK PRZELICZNIKA',class:'warn',delta:null,withinTolerance:false};
+  const delta=v.total-d.expected, lowTol=shortageTolerance(d), highTol=surplusTolerance(d);
   if(d.technology==='Laser 2D / blachy') {
-    if(v.total+tol<d.expected) return {status:v.zdwp>0?'BRAK MIN. / ZDWP':'BRAK MINIMUM',class:'bad',delta};
-    return {status:'DO WERYFIKACJI BLACHY',class:'warn',delta};
+    if(delta < -lowTol) return {status:v.zdwp>0?'BRAK MIN. / ZDWP':'BRAK MINIMUM',class:'bad',delta,withinTolerance:false,lowTol,highTol};
+    if(delta <= Math.max(highTol, Math.abs(d.expected)*0.20)) return {status:'OK',class:'ok',delta,withinTolerance:true,lowTol,highTol};
+    return {status:'DO WERYFIKACJI BLACHY',class:'warn',delta,withinTolerance:false,lowTol,highTol};
   }
-  if(Math.abs(delta)<=tol) return {status:'OK',class:'ok',delta};
-  if(delta<0) {
-    if(v.zdwp>0 && v.total<=tol && v.zdwp>=Math.abs(delta)-tol) return {status:'ZAMÓWIONE / OCZEKUJE',class:'info',delta};
-    if(v.zdwp>0) return {status:'BRAK / JEST ZDWP',class:'bad',delta};
-    return {status:'BRAK',class:'bad',delta};
+  if(delta < -lowTol) {
+    if(v.zdwp>0 && v.total<=lowTol && v.zdwp>=Math.abs(delta)-lowTol) return {status:'ZAMÓWIONE / OCZEKUJE',class:'info',delta,withinTolerance:false,lowTol,highTol};
+    if(v.zdwp>0) return {status:'BRAK / JEST ZDWP',class:'bad',delta,withinTolerance:false,lowTol,highTol};
+    return {status:'BRAK',class:'bad',delta,withinTolerance:false,lowTol,highTol};
   }
-  return {status:'NADWYŻKA',class:'warn',delta};
+  if(delta > highTol) return {status:'NADWYŻKA',class:'warn',delta,withinTolerance:false,lowTol,highTol};
+  return {status:'OK',class:'ok',delta,withinTolerance:true,lowTol,highTol};
 }
 
 function analyze() {
@@ -561,10 +629,12 @@ function analyze() {
   const usedCodes=new Set(); const report=[];
   for(const d of demands) {
     const codes=d.codes || (d.code && d.code!=='—' ? [d.code] : []); codes.forEach(c=>usedCodes.add(c));
+    if(!d.category){ const cats=[...new Set(codes.map(c=>itemRecord(c)?.category||'').filter(Boolean))]; d.category=cats.join(' / '); }
     const v=sourceValues(codes,sys,res); const result=classifyResult(d,v);
     const notes=[...(d.notes||[])]; if(d.conversion)notes.push(`Przeliczenie: ${d.conversion}.`);
     if(v.origins.length && v.origins.some(x=>x!==project)) notes.push(`Pochodzenie zasobu: ${v.origins.join(', ')} — materiał może pochodzić z innego zlecenia.`);
     if(v.kplw) notes.push(`W danych występuje KPLW: ${fmt(v.kplw,v.unit)}. KPLW nie jest dodawane do raportu przed kompletacją.`);
+    if(result.status==='NADWYŻKA') notes.push(`Dopuszczalna nadwyżka: ${fmt(result.highTol,d.unit)} (${toleranceDescription(d)}).`);
     report.push({...d,...v,unit:d.unit||v.unit||'',delta:result.delta,status:result.status,statusClass:result.class,notes:[...new Set(notes)]});
   }
 
@@ -572,8 +642,8 @@ function analyze() {
   const allCodes=new Set([...sys.keys(),...res.keys()]);
   for(const code of allCodes) {
     if(usedCodes.has(code)) continue; const v=sourceValues(code,sys,res); if(Math.abs(v.total)<1e-9) continue;
-    const name=state.items[code]?.name||v.name||''; const n=normText(name); if(n.includes('palenie laserem')) continue;
-    extras.push({technology:'Poza konstrukcją',code,name,unit:v.unit,expected:0,...v,delta:v.total,status:'POZA KONSTRUKCJĄ',statusClass:'gray',notes:[v.origins.length?`NrZAMP / pochodzenie: ${v.origins.join(', ')}`:'Indeks ma stan/ruch pod projektem, ale nie został znaleziony w dostarczonych listach konstrukcyjnych.'],extra:true});
+    const name=itemRecord(code)?.name||v.name||''; const n=normText(name); if(n.includes('palenie laserem')) continue;
+    extras.push({technology:'Poza konstrukcją',code,name,unit:v.unit,category:itemRecord(code)?.category||'',expected:0,...v,delta:v.total,status:'POZA KONSTRUKCJĄ',statusClass:'gray',notes:[v.origins.length?`NrZAMP / pochodzenie: ${v.origins.join(', ')}`:'Indeks ma stan/ruch pod projektem, ale nie został znaleziony w dostarczonych listach konstrukcyjnych.'],extra:true});
   }
 
   const unresolved=demands.filter(d=>d.confidence==='unknown'||d.expected===null).map(d=>`${d.technology}: ${d.code} — ${d.name||d.cutDesc||''}`);
@@ -585,7 +655,7 @@ function analyze() {
 function visibleRows() {
   if(!state.analysis) return [];
   let rows=[...state.analysis.report]; if(el.showExtras.checked) rows.push(...state.analysis.extras);
-  if(el.hideOk.checked) rows=rows.filter(r=>r.status!=='OK');
+  rows=rows.filter(r=>r.status!=='OK');
   const q=normText(el.searchInput.value); if(q) rows=rows.filter(r=>normText(`${r.code} ${r.name} ${r.technology} ${r.status}`).includes(q));
   const severity={bad:0,warn:1,info:2,gray:3,ok:4}; rows.sort((a,b)=>(severity[a.statusClass]??9)-(severity[b.statusClass]??9)||String(a.technology).localeCompare(String(b.technology),'pl')||String(a.code).localeCompare(String(b.code),'pl'));
   return rows;
@@ -601,7 +671,7 @@ function renderResults() {
   ].join('');
   const rr=a.report; const counts={ok:0,bad:0,warn:0,info:0,conv:0}; rr.forEach(r=>{if(r.status==='OK')counts.ok++;else if(r.statusClass==='bad')counts.bad++;else if(r.statusClass==='warn')counts.warn++;else counts.info++;if(r.status==='BRAK PRZELICZNIKA')counts.conv++;});
   el.kpis.innerHTML=`
-    <div class="kpi ok"><b>${counts.ok}</b><span>OK</span></div>
+    <div class="kpi ok"><b>${counts.ok}</b><span>zgodne — pominięte</span></div>
     <div class="kpi bad"><b>${counts.bad}</b><span>braki / błędy</span></div>
     <div class="kpi warn"><b>${counts.warn}</b><span>nadwyżki / weryfikacja</span></div>
     <div class="kpi info"><b>${counts.info}</b><span>zamówione / outsourcing</span></div>
@@ -624,15 +694,15 @@ function renderDiagnostics() {
   const transferred=[]; for(const [code,r] of a.res.entries()) if([...r.origins].some(x=>x!==a.project)) transferred.push(`${code} — ${r.name}: źródło ${[...r.origins].join(', ')}`);
   if(transferred.length) chunks.push(`<div class="diag-section"><h4>Zasoby pochodzące z innych zleceń</h4><div class="diag-list">${transferred.slice(0,80).map(x=>`• ${esc(x)}`).join('<br>')}${transferred.length>80?`<br>… i ${transferred.length-80} kolejnych`:''}</div></div>`);
   if(a.kplwTotal) chunks.push(`<div class="diag-section"><h4>Kompletacja</h4><div class="diag-list">W plikach znaleziono KPLW dla projektu. Zgodnie z logiką raportu przed kompletacją te ilości <strong>nie są dodawane</strong> do bilansu.</div></div>`);
-  chunks.push(`<div class="diag-section"><h4>Założenia wersji v0.1</h4><div class="diag-list">• ZKP/KZKP i RW są liczone z pola „Zmiana ilości”.<br>• ZDWP jest informacyjne — nie jest dodawane do stanu projektu.<br>• Zasoby są rozdzielane na „Produkcja wyposażenia” i „Materiały wyposażenia”. Bieżący projekt jest brany z NrZAMP (kolumna L), a Projekt26 zostaje jako informacja o pochodzeniu — dzięki temu widać przesunięcia z innych projektów.<br>• Blachy: konstrukcja daje masę netto detali; aplikacja przypisuje indeksy po gatunku i grubości, ale nie udaje, że zna prawidłowy odpad technologiczny bez rozkroju.</div></div>`);
+  chunks.push(`<div class="diag-section"><h4>Założenia wersji v0.2</h4><div class="diag-list">• ZKP/KZKP i RW są liczone z pola „Zmiana ilości”.<br>• ZDWP jest informacyjne — nie jest dodawane do stanu projektu.<br>• Zasoby są rozdzielane na „Produkcja wyposażenia” i „Materiały wyposażenia”. Bieżący projekt jest brany z NrZAMP (kolumna L), a Projekt26 zostaje jako informacja o pochodzeniu — dzięki temu widać przesunięcia z innych projektów.<br>• Blachy: konstrukcja daje masę netto detali; aplikacja przypisuje indeksy po gatunku i grubości, ale nie udaje, że zna prawidłowy odpad technologiczny bez rozkroju.<br>• Raport główny i eksport pokazują wyłącznie różnice / pozycje wymagające reakcji.<br>• Niedobór jest traktowany rygorystycznie; niewielka nadwyżka jest tolerowana zależnie od kategorii i jednostki. Dla złącznych: do 5%, minimum 2 szt., maksymalnie 10 szt. nadwyżki.</div></div>`);
   el.diagnostics.innerHTML=chunks.join('');
 }
 
 function exportReport() {
   const a=state.analysis; if(!a||!window.XLSX)return;
-  const all=[...a.report,...a.extras];
+  const all=[...a.report.filter(r=>r.status!=='OK'),...a.extras];
   const data=all.map(r=>({
-    'Projekt':a.project,'Nazwa projektu':a.projectName,'Technologia':r.technology,'Indeks':r.code,'Materiał':r.name,'JM systemowa':r.unit,
+    'Projekt':a.project,'Nazwa projektu':a.projectName,'Technologia':r.technology,'Indeks':r.code,'Materiał':r.name,'Kategoria':r.category||'','JM systemowa':r.unit,
     'Konstrukcja':r.expected,'ZKP':r.zkp,'RW':r.rw,'Produkcja wyposażenia':r.prod,'Materiały wyposażenia':r.mat,'Razem w projekcie':r.total,'ZDWP':r.zdwp,'Różnica':r.delta,'Status':r.status,'Uwagi':(r.notes||[]).join(' | '),
     'Pochodzenie NrZAMP':(r.origins||[]).join(', ')
   }));
@@ -662,6 +732,7 @@ el.fileInput.addEventListener('change',e=>addFiles(e.target.files));
 el.dropzone.addEventListener('drop',e=>addFiles(e.dataTransfer.files));
 el.clearBtn.addEventListener('click',()=>{state.datasets=[];state.files=[];state.warnings=[];state.analysis=null;renderFiles();renderWarnings();el.results.classList.add('hidden');el.exportBtn.disabled=true;updateProjectDisplay();});
 el.analyzeBtn.addEventListener('click',analyze); el.exportBtn.addEventListener('click',exportReport); el.exportDbBtn.addEventListener('click',exportDb); el.importDbInput.addEventListener('change',e=>e.target.files[0]&&importDb(e.target.files[0]));
-[el.hideOk,el.showExtras].forEach(x=>x.addEventListener('change',renderTable)); el.searchInput.addEventListener('input',renderTable); el.laser3dMode.addEventListener('change',()=>{if(state.analysis)analyze()});
+[el.showExtras].filter(Boolean).forEach(x=>x.addEventListener('change',renderTable)); el.searchInput.addEventListener('input',renderTable); el.laser3dMode.addEventListener('change',()=>{if(state.analysis)analyze()});
 
-refreshProjectHints(); updateProjectDisplay(); renderFiles();
+async function init(){ await loadMasterItems(); refreshProjectHints(); updateProjectDisplay(); renderFiles(); renderWarnings(); }
+init();
