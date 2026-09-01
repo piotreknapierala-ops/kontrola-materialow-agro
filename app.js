@@ -51,7 +51,7 @@ function *allItemEntries() {
 }
 async function loadMasterItems() {
   try {
-    const r=await fetch(`indeksy.json?v=2`,{cache:'no-store'});
+    const r=await fetch(`indeksy.json?v=3`,{cache:'no-store'});
     if(!r.ok) throw new Error(`HTTP ${r.status}`);
     state.masterItems=await r.json();
     state.masterLoaded=true;
@@ -635,7 +635,11 @@ function analyze() {
     if(v.origins.length && v.origins.some(x=>x!==project)) notes.push(`Pochodzenie zasobu: ${v.origins.join(', ')} — materiał może pochodzić z innego zlecenia.`);
     if(v.kplw) notes.push(`W danych występuje KPLW: ${fmt(v.kplw,v.unit)}. KPLW nie jest dodawane do raportu przed kompletacją.`);
     if(result.status==='NADWYŻKA') notes.push(`Dopuszczalna nadwyżka: ${fmt(result.highTol,d.unit)} (${toleranceDescription(d)}).`);
-    report.push({...d,...v,unit:d.unit||v.unit||'',delta:result.delta,status:result.status,statusClass:result.class,notes:[...new Set(notes)]});
+    const fallbackName = codes.map(c=>itemRecord(c)?.name||'').filter(Boolean).join(' / ');
+    report.push({...d,...v,
+      name:d.name||v.name||fallbackName||d.cutDesc||'',
+      category:d.category||codes.map(c=>itemRecord(c)?.category||'').filter(Boolean).join(' / '),
+      unit:d.unit||v.unit||'',delta:result.delta,status:result.status,statusClass:result.class,notes:[...new Set(notes)]});
   }
 
   const extras=[];
@@ -652,10 +656,15 @@ function analyze() {
   renderResults(); el.exportBtn.disabled=false;
 }
 
+function differenceRows(includeExtras=true) {
+  if(!state.analysis) return [];
+  const rows=[...state.analysis.report.filter(r=>r.status!=='OK')];
+  if(includeExtras) rows.push(...state.analysis.extras);
+  return rows;
+}
 function visibleRows() {
   if(!state.analysis) return [];
-  let rows=[...state.analysis.report]; if(el.showExtras.checked) rows.push(...state.analysis.extras);
-  rows=rows.filter(r=>r.status!=='OK');
+  let rows=differenceRows(el.showExtras.checked);
   const q=normText(el.searchInput.value); if(q) rows=rows.filter(r=>normText(`${r.code} ${r.name} ${r.technology} ${r.status}`).includes(q));
   const severity={bad:0,warn:1,info:2,gray:3,ok:4}; rows.sort((a,b)=>(severity[a.statusClass]??9)-(severity[b.statusClass]??9)||String(a.technology).localeCompare(String(b.technology),'pl')||String(a.code).localeCompare(String(b.code),'pl'));
   return rows;
@@ -694,13 +703,13 @@ function renderDiagnostics() {
   const transferred=[]; for(const [code,r] of a.res.entries()) if([...r.origins].some(x=>x!==a.project)) transferred.push(`${code} — ${r.name}: źródło ${[...r.origins].join(', ')}`);
   if(transferred.length) chunks.push(`<div class="diag-section"><h4>Zasoby pochodzące z innych zleceń</h4><div class="diag-list">${transferred.slice(0,80).map(x=>`• ${esc(x)}`).join('<br>')}${transferred.length>80?`<br>… i ${transferred.length-80} kolejnych`:''}</div></div>`);
   if(a.kplwTotal) chunks.push(`<div class="diag-section"><h4>Kompletacja</h4><div class="diag-list">W plikach znaleziono KPLW dla projektu. Zgodnie z logiką raportu przed kompletacją te ilości <strong>nie są dodawane</strong> do bilansu.</div></div>`);
-  chunks.push(`<div class="diag-section"><h4>Założenia wersji v0.2</h4><div class="diag-list">• ZKP/KZKP i RW są liczone z pola „Zmiana ilości”.<br>• ZDWP jest informacyjne — nie jest dodawane do stanu projektu.<br>• Zasoby są rozdzielane na „Produkcja wyposażenia” i „Materiały wyposażenia”. Bieżący projekt jest brany z NrZAMP (kolumna L), a Projekt26 zostaje jako informacja o pochodzeniu — dzięki temu widać przesunięcia z innych projektów.<br>• Blachy: konstrukcja daje masę netto detali; aplikacja przypisuje indeksy po gatunku i grubości, ale nie udaje, że zna prawidłowy odpad technologiczny bez rozkroju.<br>• Raport główny i eksport pokazują wyłącznie różnice / pozycje wymagające reakcji.<br>• Niedobór jest traktowany rygorystycznie; niewielka nadwyżka jest tolerowana zależnie od kategorii i jednostki. Dla złącznych: do 5%, minimum 2 szt., maksymalnie 10 szt. nadwyżki.</div></div>`);
+  chunks.push(`<div class="diag-section"><h4>Założenia wersji v0.3</h4><div class="diag-list">• ZKP/KZKP i RW są liczone z pola „Zmiana ilości”.<br>• ZDWP jest informacyjne — nie jest dodawane do stanu projektu.<br>• Zasoby są rozdzielane na „Produkcja wyposażenia” i „Materiały wyposażenia”. Bieżący projekt jest brany z NrZAMP (kolumna L), a Projekt26 zostaje jako informacja o pochodzeniu — dzięki temu widać przesunięcia z innych projektów.<br>• Blachy: konstrukcja daje masę netto detali; aplikacja przypisuje indeksy po gatunku i grubości, ale nie udaje, że zna prawidłowy odpad technologiczny bez rozkroju.<br>• Raport główny i eksport pokazują wyłącznie różnice / pozycje wymagające reakcji.<br>• Niedobór jest traktowany rygorystycznie; niewielka nadwyżka jest tolerowana zależnie od kategorii i jednostki. Dla złącznych: do 5%, minimum 2 szt., maksymalnie 10 szt. nadwyżki.</div></div>`);
   el.diagnostics.innerHTML=chunks.join('');
 }
 
 function exportReport() {
   const a=state.analysis; if(!a||!window.XLSX)return;
-  const all=[...a.report.filter(r=>r.status!=='OK'),...a.extras];
+  const all=differenceRows(true);
   const data=all.map(r=>({
     'Projekt':a.project,'Nazwa projektu':a.projectName,'Technologia':r.technology,'Indeks':r.code,'Materiał':r.name,'Kategoria':r.category||'','JM systemowa':r.unit,
     'Konstrukcja':r.expected,'ZKP':r.zkp,'RW':r.rw,'Produkcja wyposażenia':r.prod,'Materiały wyposażenia':r.mat,'Razem w projekcie':r.total,'ZDWP':r.zdwp,'Różnica':r.delta,'Status':r.status,'Uwagi':(r.notes||[]).join(' | '),

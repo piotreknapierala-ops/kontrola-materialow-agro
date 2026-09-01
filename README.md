@@ -1,8 +1,8 @@
-# AGRO — kontrola materiałowa projektu (v0.2)
+# AGRO — kontrola materiałowa projektu (v0.3)
 
 Statyczna aplikacja przeglądarkowa do raportu materiałowego przed kompletacją KPLW.
 
-## Co zmieniono w v0.2
+## Co zmieniono w v0.3
 
 - stała baza 17 696 unikatowych indeksów (`indeksy.json`) z nazwą, jednostką systemową i kategorią,
 - raport główny pokazuje tylko różnice / pozycje wymagające reakcji,
