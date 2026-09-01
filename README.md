@@ -1,4 +1,4 @@
-# AGRO — kontrola materiałowa projektu (v0.6)
+# AGRO — kontrola materiałowa projektu (v0.7)
 
 Statyczna aplikacja przeglądarkowa do raportu materiałowego przed kompletacją KPLW.
 
@@ -49,3 +49,12 @@ Dane z wgrywanych arkuszy są analizowane lokalnie w przeglądarce. Aplikacja ni
 - Foldery datowane zawierające zwiększenia ilości są traktowane addytywnie: baza + zwiększenie 1 + zwiększenie 2.
 - Ścieżka podfolderu jest zachowana w źródle, więc pliki o tej samej nazwie z różnych dat nie są uznawane za ten sam plik.
 - Archiwa 7z/ZIP/RAR znalezione wewnątrz folderu są obsługiwane tak samo jak archiwa wrzucone pojedynczo.
+
+
+## v0.7 — resolver blach Laser 2D
+
+- Zapotrzebowanie Laser 2D jest budowane z BOM konstrukcji w kg.
+- Aplikacja sama szuka indeksów blach faktycznie występujących pod analizowanym projektem w ZDWP/RW/ZKP i zasobach.
+- Dopasowanie bazuje przede wszystkim na grubości i rodzinie/gatunku materiału; różne formaty arkuszy są sumowane.
+- Jeśli brak dokładnego gatunku, ale pod projektem użyto zamiennika stali czarnej tej samej grubości (np. S355J2 zamiast S235), aplikacja przypisuje indeks i dodaje ostrzeżenie o zamienniku.
+- Dzięki temu pozycje blach nie zostają jako „—” do ręcznego przypisywania.

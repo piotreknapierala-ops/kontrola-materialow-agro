@@ -638,46 +638,116 @@ function constructionCutRows(cutRows, bomRows, sys, res, outsource3d) {
 }
 
 function sheetSpec(r) {
-  const desc=[r.Projekt,r['Numer katalogowy'],r.Opis].filter(Boolean).join(' '); const material=normalizeSpaces(r.Materiał);
+  const desc=[r.Projekt,r['Numer katalogowy'],r.Opis].filter(Boolean).join(' ');
+  const material=normalizeSpaces(r.Materiał);
   const m=normText(desc).match(/(?:blacha\s*)?(?:g\s*)?(?:r\s*)?(\d+(?:\.\d+)?)\s*(?:mm)?/);
   const thickness=m?Number(m[1]):null;
-  let family=''; const n=normText(material);
-  if(n.includes('alu')) family='ALU'; else if(n.includes('nierdzew')) family='INOX'; else if(n.includes('s235')) family='S235'; else if(n.includes('s355')) family='S355'; else family=n.toUpperCase();
-  const grade=(n.match(/\b(5754|6060|304|316|s235|s355)\b/)||[])[1]||'';
+  const n=normText(material);
+  let family='';
+  if(n.includes('alu')) family='ALU';
+  else if(n.includes('nierdzew')) family='INOX';
+  else if(n.includes('s235')) family='S235';
+  else if(n.includes('s355')) family='S355';
+  else if(n.includes('stal') || n.includes('czarn')) family='CARBON';
+  else family=n.toUpperCase();
+  const grade=(n.match(/\b(5754|6060|304|316)\b/)||[])[1] || (n.match(/\b(s235|s355)(?:[a-z0-9]+)?\b/)||[])[1] || '';
   return {thickness,family,grade,key:`${family}|${grade}|${thickness??'?'}`};
 }
 function systemSheetSpec(name) {
   const n=normText(name); if(!n.includes('blacha')) return null;
-  let family=''; if(n.includes('alu')) family='ALU'; else if(n.includes('nierdzew')) family='INOX'; else if(n.includes('s235')) family='S235'; else if(n.includes('s355')) family='S355';
-  const grade=(n.match(/\b(5754|6060|304|316|s235|s355)\b/)||[])[1]||'';
+  let family='';
+  if(n.includes('alu')) family='ALU';
+  else if(n.includes('nierdzew')) family='INOX';
+  else if(n.includes('s235')) family='S235';
+  else if(n.includes('s355')) family='S355';
+  else if(n.includes('stal') || n.includes('czarn')) family='CARBON';
+  const grade=(n.match(/\b(5754|6060|304|316)\b/)||[])[1] || (n.match(/\b(s235|s355)(?:[a-z0-9]+)?\b/)||[])[1] || '';
   let thickness=null;
+  // Systemowe nazwy zwykle: BLACHA 8X1500X3000..., ale obsługujemy też "blacha gr. 8".
   const after=n.match(/blacha[^0-9]*(\d+(?:\.\d+)?)\s*x/); if(after) thickness=Number(after[1]);
-  else { const m=n.match(/\b(\d+(?:\.\d+)?)\s*x\s*\d{3,4}\s*x\s*\d{3,4}\b/); if(m) thickness=Number(m[1]); }
+  else {
+    const m1=n.match(/\b(\d+(?:\.\d+)?)\s*x\s*\d{3,4}\s*x\s*\d{3,4}\b/); if(m1) thickness=Number(m1[1]);
+    else { const m2=n.match(/blacha[^0-9]*(\d+(?:\.\d+)?)(?:\s|$)/); if(m2) thickness=Number(m2[1]); }
+  }
   return {family,grade,thickness};
 }
-function sheetMatches(a,b) {
-  if(!a||!b||a.thickness===null||b.thickness===null) return false;
-  if(Math.abs(a.thickness-b.thickness)>0.01) return false;
-  if(a.grade && b.grade && a.grade!==b.grade) return false;
-  if(a.family && b.family && a.family!==b.family && !(a.family==='S235'&&b.family==='') && !(a.family==='S355'&&b.family==='')) return false;
-  return true;
+function isCarbonSheetFamily(f) { return ['S235','S355','CARBON',''].includes(f||''); }
+function sheetMatchLevel(expected,candidate) {
+  if(!expected||!candidate||expected.thickness===null||candidate.thickness===null) return 0;
+  if(Math.abs(expected.thickness-candidate.thickness)>0.01) return 0;
+
+  // Najpewniejsze: ten sam gatunek / rodzina.
+  if(expected.grade && candidate.grade && expected.grade===candidate.grade) return 4;
+  if(expected.family && candidate.family && expected.family===candidate.family) return 3;
+
+  // Blachy konstrukcyjne ze stali czarnej: pod projektem może zostać użyty wyższy/inny
+  // gatunek systemowy (np. konstrukcja S235, zasób S355J2). Nie odrzucamy go, ale flagujemy.
+  if(isCarbonSheetFamily(expected.family) && isCarbonSheetFamily(candidate.family)) return 2;
+
+  // INOX/ALU bez jednoznacznego gatunku: pozwalamy na rodzinę, lecz nie mieszamy INOX z ALU/stalą czarną.
+  if(expected.family==='INOX' && candidate.family==='INOX') return 2;
+  if(expected.family==='ALU' && candidate.family==='ALU') return 2;
+  return 0;
 }
 function constructionSheetRows(bomRows, sys, res) {
-  const source=bomRows.filter(r=>['Laser 2D','Wykrawarka'].includes(r.__tech)); const groups=new Map();
+  const source=bomRows.filter(r=>['Laser 2D','Wykrawarka'].includes(r.__tech));
+  const groups=new Map();
   for(const r of source) {
-    const spec=sheetSpec(r), qty=num(r['Ilość na całe zlecenie']), mass=parseMassKg(r.Masa); if(!spec.thickness||!qty||!mass) continue;
+    const spec=sheetSpec(r), qty=num(r['Ilość na całe zlecenie']), mass=parseMassKg(r.Masa);
+    if(!spec.thickness||!qty||!mass) continue;
     if(!groups.has(spec.key)) groups.set(spec.key,{technology:'Laser 2D / blachy',spec,netMass:0,items:0,notes:new Set()});
     const g=groups.get(spec.key); g.netMass+=mass*qty; g.items+=qty; g.notes.add(`${r.__tech}: ${r.__file}`);
   }
-  const projectCodes=new Set([...sys.keys(),...res.keys()]); const out=[];
+
+  // Kandydatami są WYŁĄCZNIE indeksy, które rzeczywiście występują pod analizowanym projektem
+  // w ZDWP/RW/ZKP albo zasobach. Dzięki temu format 1500x3000 / 2000x4000 nie ma znaczenia:
+  // wszystkie użyte formaty tego samego materiału mogą zostać zsumowane.
+  const projectCodes=new Set([...sys.keys(),...res.keys()]);
+  const out=[];
   for(const g of groups.values()) {
-    const candidates=[];
+    const ranked=[];
     for(const code of projectCodes) {
-      const name=itemRecord(code)?.name||sys.get(code)?.name||res.get(code)?.name||''; const sp=systemSheetSpec(name);
-      if(sheetMatches(g.spec,sp)) candidates.push(code);
+      const name=itemRecord(code)?.name||sys.get(code)?.name||res.get(code)?.name||'';
+      const sp=systemSheetSpec(name);
+      const level=sheetMatchLevel(g.spec,sp);
+      if(!level) continue;
+      const s=sys.get(code), z=res.get(code);
+      const evidence=Math.abs(s?.zdwp||0)+Math.abs(s?.zkp||0)+Math.abs(s?.rw||0)+Math.abs(z?.prod||0)+Math.abs(z?.mat||0)+Math.abs(z?.other||0);
+      ranked.push({code,name,sp,level,evidence});
     }
-    const names=candidates.map(c=>itemRecord(c)?.name||sys.get(c)?.name||res.get(c)?.name||c);
-    out.push({technology:'Laser 2D / blachy',code:candidates.join(', ')||'—',codes:candidates,name:names.join(' | ')||`${g.spec.family} ${g.spec.grade} blacha ${g.spec.thickness} mm`,unit:'kg',category:candidates.map(c=>itemRecord(c)?.category||'').filter(Boolean).join(' / '),expected:g.netMass,source:'BOM Laser 2D/Wykrawarka',confidence:candidates.length?'matched':'unknown',notes:[`Masa netto detali konstrukcyjnych: ${round(g.netMass,2)} kg.`,candidates.length?`Automatycznie przypisane indeksy systemowe: ${candidates.join(', ')}`:'Nie znaleziono indeksu blachy w ruchach/zasobach tego projektu.', 'Dla blach jest to minimum materiałowe; format arkusza i odpad technologiczny mogą zwiększyć prawidłową ilość systemową.', ...g.notes]});
+
+    // Jeżeli istnieje zgodny gatunek, nie dokładamy zamienników. Jeżeli zgodnego nie ma,
+    // bierzemy użyte pod projektem zamienniki tej samej grubości/rodziny materiałowej.
+    const bestLevel=ranked.length?Math.max(...ranked.map(x=>x.level)):0;
+    const selected=ranked.filter(x=>x.level===bestLevel && (x.evidence>0 || bestLevel>=3));
+    const candidates=selected.map(x=>x.code);
+    const names=selected.map(x=>x.name||x.code);
+    const substitute=bestLevel===2 && selected.length>0;
+    const mismatchNotes=[];
+    if(substitute) {
+      const found=[...new Set(selected.map(x=>x.sp.grade||x.sp.family).filter(Boolean))].join(', ');
+      mismatchNotes.push(`Indeks przypisano po grubości i faktycznym użyciu pod projektem. Konstrukcja: ${g.spec.grade||g.spec.family}; system: ${found||'stal czarna'}. Sprawdź/zaakceptuj zamiennik materiałowy.`);
+    }
+
+    out.push({
+      technology:'Laser 2D / blachy',
+      code:candidates.join(', ')||'—',
+      codes:candidates,
+      name:names.join(' | ')||`${g.spec.family} ${g.spec.grade} blacha ${g.spec.thickness} mm`,
+      unit:'kg',
+      category:candidates.map(c=>itemRecord(c)?.category||'').filter(Boolean).join(' / '),
+      expected:g.netMass,
+      source:'BOM Laser 2D/Wykrawarka',
+      confidence:candidates.length?(substitute?'matched-substitute':'matched'):'unknown',
+      notes:[
+        `Masa netto detali konstrukcyjnych: ${round(g.netMass,2)} kg.`,
+        candidates.length?`Automatycznie przypisane indeksy systemowe: ${candidates.join(', ')}.`:'Nie znaleziono indeksu blachy w ruchach/zasobach tego projektu.',
+        ...mismatchNotes,
+        'Format arkusza nie rozbija zapotrzebowania: wszystkie indeksy użyte pod projektem dla tej samej grubości/gatunku są sumowane w kg.',
+        'Dla blach masa konstrukcji jest minimum materiałowym; format arkusza i odpad technologiczny mogą zwiększyć prawidłową ilość systemową.',
+        ...g.notes
+      ]
+    });
   }
   return out;
 }
@@ -827,7 +897,7 @@ function renderDiagnostics() {
   const transferred=[]; for(const [code,r] of a.res.entries()) if([...r.origins].some(x=>x!==a.project)) transferred.push(`${code} — ${r.name}: źródło ${[...r.origins].join(', ')}`);
   if(transferred.length) chunks.push(`<div class="diag-section"><h4>Zasoby pochodzące z innych zleceń</h4><div class="diag-list">${transferred.slice(0,80).map(x=>`• ${esc(x)}`).join('<br>')}${transferred.length>80?`<br>… i ${transferred.length-80} kolejnych`:''}</div></div>`);
   if(a.kplwTotal) chunks.push(`<div class="diag-section"><h4>Kompletacja</h4><div class="diag-list">W plikach znaleziono KPLW dla projektu. Zgodnie z logiką raportu przed kompletacją te ilości <strong>nie są dodawane</strong> do bilansu.</div></div>`);
-  chunks.push(`<div class="diag-section"><h4>Założenia wersji v0.6</h4><div class="diag-list">• ZKP/KZKP i RW są liczone z pola „Zmiana ilości”.<br>• ZDWP jest informacyjne — nie jest dodawane do stanu projektu.<br>• Zasoby są rozdzielane na „Produkcja wyposażenia” i „Materiały wyposażenia”. Bieżący projekt jest brany z NrZAMP (kolumna L), a Projekt26 zostaje jako informacja o pochodzeniu — dzięki temu widać przesunięcia z innych projektów.<br>• Blachy: konstrukcja daje masę netto detali; aplikacja przypisuje indeksy po gatunku i grubości, ale nie udaje, że zna prawidłowy odpad technologiczny bez rozkroju.<br>• Wszystkie dostarczone zestawienia konstrukcyjne są addytywne. Foldery datowane używane jako „zwiększenia ilości” są sumowane z zestawieniem bazowym, a nie zastępują go.<br>• Raport główny i eksport pokazują wyłącznie różnice / pozycje wymagające reakcji.<br>• Niedobór jest traktowany rygorystycznie; niewielka nadwyżka jest tolerowana zależnie od kategorii i jednostki. Dla złącznych: do 5%, minimum 2 szt., maksymalnie 10 szt. nadwyżki.</div></div>`);
+  chunks.push(`<div class="diag-section"><h4>Założenia wersji v0.7</h4><div class="diag-list">• ZKP/KZKP i RW są liczone z pola „Zmiana ilości”.<br>• ZDWP jest informacyjne — nie jest dodawane do stanu projektu.<br>• Zasoby są rozdzielane na „Produkcja wyposażenia” i „Materiały wyposażenia”. Bieżący projekt jest brany z NrZAMP (kolumna L), a Projekt26 zostaje jako informacja o pochodzeniu — dzięki temu widać przesunięcia z innych projektów.<br>• Blachy Laser 2D: aplikacja najpierw buduje zapotrzebowanie z konstrukcji, a następnie automatycznie przypisuje indeksy faktycznie użyte pod projektem po grubości i materiale. Różne formaty arkuszy są sumowane w kg. Gdy pod projektem użyto zamiennika gatunkowego (np. S355J2 zamiast S235), indeks jest przypisany automatycznie, ale raport zawiera ostrzeżenie o zamienniku.<br>• Wszystkie dostarczone zestawienia konstrukcyjne są addytywne. Foldery datowane używane jako „zwiększenia ilości” są sumowane z zestawieniem bazowym, a nie zastępują go.<br>• Raport główny i eksport pokazują wyłącznie różnice / pozycje wymagające reakcji.<br>• Niedobór jest traktowany rygorystycznie; niewielka nadwyżka jest tolerowana zależnie od kategorii i jednostki. Dla złącznych: do 5%, minimum 2 szt., maksymalnie 10 szt. nadwyżki.</div></div>`);
   el.diagnostics.innerHTML=chunks.join('');
 }
 
