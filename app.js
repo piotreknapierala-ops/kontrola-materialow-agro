@@ -247,24 +247,62 @@ async function readWorkbook(file) {
   return out;
 }
 
-async function expand7z(file) {
-  try {
-    const mod=await import('https://cdn.jsdelivr.net/npm/libarchive.js@2.0.2/dist/libarchive.js');
-    const {Archive}=mod;
-    Archive.init({workerUrl:'https://cdn.jsdelivr.net/npm/libarchive.js@2.0.2/dist/worker-bundle.js'});
-    const archive=await Archive.open(file);
-    const tree=await archive.extractFiles();
-    const files=[];
-    const walk=(node,path='')=>{
-      for(const [name,val] of Object.entries(node||{})) {
-        if(val instanceof File) files.push(new File([val], `${file.name}__${path}${name}`, {type:val.type,lastModified:val.lastModified}));
-        else if(val && typeof val==='object') walk(val,`${path}${name}/`);
+const ARCHIVE_CDN = 'https://cdn.jsdelivr.net/npm/libarchive.js@2.0.2/dist/';
+let archiveModulePromise = null;
+let archiveWorkerBlobUrl = null;
+
+async function getArchiveModule() {
+  if (!archiveModulePromise) {
+    archiveModulePromise = (async () => {
+      const mod = await import(`${ARCHIVE_CDN}libarchive.js`);
+      if (!archiveWorkerBlobUrl) {
+        const workerUrl = `${ARCHIVE_CDN}worker-bundle.js`;
+        const r = await fetch(workerUrl, {cache:'force-cache', mode:'cors'});
+        if (!r.ok) throw new Error(`nie pobrano modułu archiwów (HTTP ${r.status})`);
+        let workerSource = await r.text();
+        // Worker z CDN nie może być uruchomiony bezpośrednio przez GitHub Pages.
+        // Uruchamiamy go z lokalnego adresu blob:, ale pozostawiamy bazę URL modułu
+        // wskazującą na CDN, aby libarchive.wasm nadal został znaleziony.
+        workerSource = workerSource.replace(/import\.meta\.url/g, JSON.stringify(workerUrl));
+        archiveWorkerBlobUrl = URL.createObjectURL(new Blob([workerSource], {type:'text/javascript'}));
       }
-    };
-    walk(tree);
-    return files.filter(f=>/\.(xlsx|xls|xlsb|csv)$/i.test(f.name));
+      mod.Archive.init({
+        getWorker: () => new Worker(archiveWorkerBlobUrl, {type:'module'})
+      });
+      return mod;
+    })();
+  }
+  return archiveModulePromise;
+}
+
+function isArchiveFile(name) {
+  return /\.(7z|zip|rar|tar|tgz|gz)$/i.test(name || '');
+}
+function isWorkbookFile(name) {
+  return /\.(xlsx|xls|xlsb|csv)$/i.test(name || '');
+}
+
+async function expandArchive(file) {
+  let archive = null;
+  try {
+    const {Archive} = await getArchiveModule();
+    archive = await Archive.open(file);
+    const entries = await archive.getFilesArray();
+    const wanted = entries.filter(entry => entry?.file && isWorkbookFile(entry.file.name));
+    const files = [];
+    for (const entry of wanted) {
+      const extracted = entry.file instanceof File ? entry.file : await entry.file.extract();
+      const innerPath = `${entry.path || ''}${extracted.name}`.replace(/^\/+/, '');
+      files.push(new File([extracted], `${file.name}__${innerPath}`, {
+        type: extracted.type || 'application/octet-stream',
+        lastModified: extracted.lastModified || file.lastModified
+      }));
+    }
+    try { await archive.close(); } catch {}
+    return files;
   } catch(err) {
-    state.warnings.push(`Nie udało się automatycznie rozpakować ${file.name}: ${err.message}. W tej paczce wrzuć bezpośrednio pliki XLSX.`);
+    try { if (archive) await archive.close(); } catch {}
+    state.warnings.push(`Nie udało się odczytać archiwum ${file.name}: ${err.message}.`);
     return [];
   }
 }
@@ -274,10 +312,11 @@ async function addFiles(fileList) {
   for(const file of incoming) {
     const originalKey=`${file.name}|${file.size}|${file.lastModified}`;
     if(state.files.some(f=>f.key===originalKey)) continue;
-    if(/\.7z$/i.test(file.name)) {
-      state.files.push({key:originalKey,name:file.name,size:file.size,type:'archive',status:'Rozpakowywanie…'}); renderFiles();
-      const inside=await expand7z(file);
-      state.files.find(f=>f.key===originalKey).status=inside.length?`${inside.length} arkuszy z archiwum`:'Nie odczytano';
+    if(isArchiveFile(file.name)) {
+      state.files.push({key:originalKey,name:file.name,size:file.size,type:'archive',status:'Szukam Exceli w archiwum…'}); renderFiles();
+      const inside=await expandArchive(file);
+      const rec=state.files.find(f=>f.key===originalKey);
+      rec.status=inside.length ? `${inside.length} plik${inside.length===1?'':'i'} Excel/CSV z archiwum` : 'Brak odczytanych Exceli';
       for(const sub of inside) await ingestFile(sub, `${file.name} → `);
     } else await ingestFile(file);
   }
@@ -324,7 +363,7 @@ function learnFromDataset(ds) {
 }
 
 function renderFiles() {
-  const labels={system:'SYSTEM',resources:'ZASOBY',bom:'KONSTRUKCJA',cutlist:'ROZPISKA',master:'BAZA INDEKSÓW',mixed:'MIESZANY',archive:'7Z',error:'BŁĄD',pending:'…'};
+  const labels={system:'SYSTEM',resources:'ZASOBY',bom:'KONSTRUKCJA',cutlist:'ROZPISKA',master:'BAZA INDEKSÓW',mixed:'MIESZANY',archive:'ARCHIWUM',error:'BŁĄD',pending:'…'};
   const cls={system:'system',resources:'resource',bom:'construction',cutlist:'construction',master:'resource',mixed:'system',archive:'archive',error:'error',pending:''};
   el.fileList.innerHTML=state.files.map(f=>`<div class="file-item"><div><strong title="${esc(f.name)}">${esc(f.name)}</strong><small>${esc(f.status||'')}</small></div><span class="tag ${cls[f.type]||''}">${labels[f.type]||f.type}</span></div>`).join('');
   if(state.files.length){
@@ -496,14 +535,33 @@ function constructionCutRows(cutRows, bomRows, sys, res, outsource3d) {
   for(const r of cutRows) {
     const raw=normalizeCode(r.Etykieta); if(!raw) continue;
     const desc=normalizeSpaces(r.Tworzywo); const rr=resolveCode(raw,desc); const code=rr.code; const tech=r.__tech;
-    const key=`${tech}|${code}`; if(!groups.has(key)) groups.set(key,{technology:tech,code,name:'',unit:'',lengthM:0,stockPieces:0,expected:0,rows:0,notes:[],source:'Rozpiska',outsource:false,conversion:null,confidence:rr.confidence,cutDesc:desc});
-    const g=groups.get(key); g.lengthM+=parseLengthMm(r.Długość)/1000; g.stockPieces+=1; g.rows+=1; if(rr.note)g.notes.push(rr.note);
+    const qty=num(r.Ilość); if(!(qty>0)) continue;
+    const listedLenMm=parseLengthMm(r.Długość); if(!(listedLenMm>0)) continue;
+    const scrapMm=Math.max(0,num(r.Odpad));
+    // Laser 3D: konstrukcja wpisuje 5800 mm, ale magazynowo kupujemy/rozliczamy odcinek 6000 mm.
+    const stockLenMm=(tech==='Laser 3D' && Math.abs(listedLenMm-5800)<0.001) ? 6000 : listedLenMm;
+    // Ilość = liczba odcinków z danym rozkrojem; Odpad jest odpadem NA JEDEN odcinek.
+    // Zużycie materiału = (długość handlowa - odpad) × ilość.
+    const usedPerPieceMm=Math.max(0,stockLenMm-scrapMm);
+    const usedLengthM=(usedPerPieceMm*qty)/1000;
+    const key=`${tech}|${code}`;
+    if(!groups.has(key)) groups.set(key,{technology:tech,code,name:'',unit:'',lengthM:0,stockPieces:0,grossLengthM:0,scrapLengthM:0,expected:0,rows:0,notes:[],source:'Rozpiska',outsource:false,conversion:null,confidence:rr.confidence,cutDesc:desc,laser3d5800Count:0});
+    const g=groups.get(key);
+    g.lengthM+=usedLengthM;
+    g.grossLengthM+=(stockLenMm*qty)/1000;
+    g.scrapLengthM+=(scrapMm*qty)/1000;
+    g.stockPieces+=qty;
+    g.rows+=1;
+    if(tech==='Laser 3D' && Math.abs(listedLenMm-5800)<0.001) g.laser3d5800Count+=qty;
+    if(rr.note)g.notes.push(rr.note);
   }
   for(const g of groups.values()) {
     const master=itemRecord(g.code)||{}, s=sys.get(g.code), z=res.get(g.code); g.name=master.name||s?.name||z?.name||g.cutDesc; g.unit=(s?.unit||z?.unit||master.unit||'').toLowerCase(); g.category=master.category||'';
+    if(g.laser3d5800Count>0) g.notes.push(`Laser 3D: ${round(g.laser3d5800Count,3)} odc. o długości 5800 mm przeliczono jako 6000 mm.`);
+    g.notes.push(`Rozpiska: zużycie = (długość handlowa − odpad) × ilość; brutto ${round(g.grossLengthM,3)} m − odpad ${round(g.scrapLengthM,3)} m = ${round(g.lengthM,3)} m.`);
     if(g.technology==='Laser 3D' && outsource3d) { g.outsource=true; g.expected=null; g.notes.push('Laser 3D: usługa z materiałem wykonawcy — materiał nie jest wymagany w naszym RW/ZKP/zasobach.'); continue; }
-    if(g.unit==='m') { g.expected=g.lengthM; g.conversion='suma długości handlowych z rozpiski'; }
-    else if(g.unit==='szt') { g.expected=g.stockPieces; g.conversion='liczba odcinków handlowych z rozpiski'; }
+    if(g.unit==='m') { g.expected=g.lengthM; g.conversion='(długość handlowa − odpad) × ilość'; }
+    else if(g.unit==='szt') { g.expected=g.stockPieces; g.conversion='suma liczby odcinków z kolumny Ilość'; }
     else if(g.unit==='kg') {
       const conv=findKgPerM(g.cutDesc,g.name,g.technology,conversions);
       if(conv){g.expected=g.lengthM*conv.kgPerM;g.conversion=`${round(g.lengthM,3)} m × ${round(conv.kgPerM,4)} kg/m`;g.notes.push(`Przelicznik ${conv.method||'BOM'}: ${round(conv.kgPerM,4)} kg/m (${Math.round(conv.score*100)}%) — ${conv.match}`);}

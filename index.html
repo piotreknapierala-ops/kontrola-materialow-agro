@@ -60,11 +60,11 @@
       </div>
 
       <div id="dropzone" class="dropzone" tabindex="0">
-        <input id="fileInput" type="file" multiple accept=".xlsx,.xls,.xlsb,.csv,.7z" hidden />
+        <input id="fileInput" type="file" multiple accept=".xlsx,.xls,.xlsb,.csv,.7z,.zip,.rar,.tar,.tgz,.gz" hidden />
         <div class="drop-icon">＋</div>
         <strong>Przeciągnij pliki tutaj</strong>
-        <span>lub kliknij, aby wybrać XLSX / XLS / CSV / 7z</span>
-        <small>Archiwa 7z są rozpakowywane w przeglądarce. Jeśli przeglądarka zablokuje bibliotekę archiwów, można wrzucić same XLSX z paczki.</small>
+        <span>lub kliknij, aby wybrać XLSX / XLS / CSV / ZIP / 7z / RAR</span>
+        <small>Archiwa są czytane bezpośrednio w przeglądarce. Aplikacja wyciąga z nich tylko pliki Excel/CSV — nie musisz ich ręcznie rozpakowywać.</small>
       </div>
 
       <div id="fileSummary" class="file-summary hidden"></div>
@@ -131,10 +131,10 @@
   </main>
 
   <footer>
-    Wersja próbna v0.3 — raport różnic z bazą indeksów i tolerancjami materiałowymi.
+    Wersja próbna v0.5 — poprawione rozpiski: Ilość × (długość handlowa − odpad), Laser 3D 5800→6000.
   </footer>
 
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
-  <script type="module" src="app.js?v=3"></script>
+  <script type="module" src="app.js?v=5"></script>
 </body>
 </html>
