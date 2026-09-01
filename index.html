@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AGRO — kontrola materiałowa projektu</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">AGRO PROJECTS</div>
+      <h1>Kontrola materiałowa projektu</h1>
+      <p class="subtitle">Konstrukcja → ZDWP → zasoby → RW/ZKP → raport przed kompletacją</p>
+    </div>
+    <div class="privacy">Dane są analizowane lokalnie w przeglądarce</div>
+  </header>
+
+  <main class="container">
+    <section class="card project-card">
+      <div class="section-title-row">
+        <div>
+          <h2>1. Projekt</h2>
+          <p>Wpisz wyłącznie numer, np. <strong>P/132/26</strong>.</p>
+        </div>
+        <div class="db-actions">
+          <button id="exportDbBtn" class="btn secondary">Eksport bazy</button>
+          <label class="btn secondary file-label">Import bazy<input id="importDbInput" type="file" accept=".json" hidden></label>
+        </div>
+      </div>
+      <div class="project-grid">
+        <label>
+          <span>Numer projektu</span>
+          <input id="projectInput" list="projectHints" placeholder="P/132/26" autocomplete="off" />
+          <datalist id="projectHints"></datalist>
+        </label>
+        <div class="project-name-box">
+          <span>Nazwa projektu</span>
+          <strong id="projectName">—</strong>
+          <small id="projectSource">Nazwa pojawi się z bazy lub po wczytaniu eksportu systemowego.</small>
+        </div>
+        <label>
+          <span>Laser 3D</span>
+          <select id="laser3dMode">
+            <option value="auto">Automatycznie z ZDWP</option>
+            <option value="external">Usługa + materiał wykonawcy</option>
+            <option value="own">Usługa / produkcja z naszym materiałem</option>
+          </select>
+        </label>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-title-row">
+        <div>
+          <h2>2. Pliki</h2>
+          <p>Wrzuć wszystko naraz. Aplikacja sama rozpoznaje: konstrukcję, rozpiski, zasoby, ZDWP, RW, ZKP i kompletację.</p>
+        </div>
+        <button id="clearBtn" class="btn ghost">Wyczyść pliki</button>
+      </div>
+
+      <div id="dropzone" class="dropzone" tabindex="0">
+        <input id="fileInput" type="file" multiple accept=".xlsx,.xls,.xlsb,.csv,.7z" hidden />
+        <div class="drop-icon">＋</div>
+        <strong>Przeciągnij pliki tutaj</strong>
+        <span>lub kliknij, aby wybrać XLSX / XLS / CSV / 7z</span>
+        <small>Archiwa 7z są rozpakowywane w przeglądarce. Jeśli przeglądarka zablokuje bibliotekę archiwów, można wrzucić same XLSX z paczki.</small>
+      </div>
+
+      <div id="fileSummary" class="file-summary hidden"></div>
+      <div id="fileList" class="file-list"></div>
+      <div id="warnings" class="warnings hidden"></div>
+    </section>
+
+    <section class="actions">
+      <button id="analyzeBtn" class="btn primary" disabled>Analizuj projekt</button>
+      <button id="exportBtn" class="btn secondary" disabled>Eksport raportu do Excel</button>
+    </section>
+
+    <section id="results" class="hidden">
+      <div class="result-head">
+        <div>
+          <div class="eyebrow">RAPORT PRZED KOMPLETACJĄ</div>
+          <h2 id="resultTitle">—</h2>
+          <p id="resultMeta"></p>
+        </div>
+        <div id="serviceFlags" class="service-flags"></div>
+      </div>
+
+      <div id="kpis" class="kpis"></div>
+
+      <div class="toolbar card compact">
+        <div class="filters">
+          <label><input type="checkbox" id="hideOk" checked> Ukryj pozycje OK</label>
+          <label><input type="checkbox" id="showExtras"> Pokaż materiały systemowe spoza konstrukcji</label>
+        </div>
+        <input id="searchInput" class="search" placeholder="Szukaj indeksu / materiału…" />
+      </div>
+
+      <div class="card table-card">
+        <div class="table-wrap">
+          <table id="reportTable">
+            <thead>
+              <tr>
+                <th>Technologia</th>
+                <th>Indeks</th>
+                <th>Materiał</th>
+                <th>j.m.</th>
+                <th class="num">Konstrukcja</th>
+                <th class="num">ZKP</th>
+                <th class="num">RW</th>
+                <th class="num">Produkcja wyposażenia</th>
+                <th class="num">Materiały wyposażenia</th>
+                <th class="num">Razem w projekcie</th>
+                <th class="num">ZDWP</th>
+                <th class="num">Różnica</th>
+                <th>Status</th>
+                <th>Uwagi</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <details class="card details-card">
+        <summary>Diagnostyka i nierozpoznane pozycje</summary>
+        <div id="diagnostics"></div>
+      </details>
+    </section>
+  </main>
+
+  <footer>
+    Wersja próbna v0.1 — silnik uzgodnienia materiałowego przed KPLW.
+  </footer>
+
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
