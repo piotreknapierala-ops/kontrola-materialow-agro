@@ -6,7 +6,7 @@ const STORAGE_KEYS = {
 const $ = (id) => document.getElementById(id);
 const el = {
   projectInput: $('projectInput'), projectName: $('projectName'), projectSource: $('projectSource'), projectHints: $('projectHints'),
-  laser3dMode: $('laser3dMode'), dropzone: $('dropzone'), fileInput: $('fileInput'), fileList: $('fileList'), fileSummary: $('fileSummary'), warnings: $('warnings'),
+  laser3dMode: $('laser3dMode'), dropzone: $('dropzone'), fileInput: $('fileInput'), folderInput: $('folderInput'), folderBtn: $('folderBtn'), fileList: $('fileList'), fileSummary: $('fileSummary'), warnings: $('warnings'),
   analyzeBtn: $('analyzeBtn'), exportBtn: $('exportBtn'), clearBtn: $('clearBtn'), exportDbBtn: $('exportDbBtn'), importDbInput: $('importDbInput'),
   results: $('results'), resultTitle: $('resultTitle'), resultMeta: $('resultMeta'), serviceFlags: $('serviceFlags'), kpis: $('kpis'),
   reportBody: document.querySelector('#reportTable tbody'), hideOk: $('hideOk'), showExtras: $('showExtras'), searchInput: $('searchInput'), diagnostics: $('diagnostics'),
@@ -231,7 +231,7 @@ function technologyFromName(filename='') {
   return 'Inne';
 }
 
-async function readWorkbook(file) {
+async function readWorkbook(file, sourceName=file.name) {
   if (!window.XLSX) throw new Error('Nie załadowała się biblioteka XLSX. Sprawdź połączenie z internetem.');
   const data=await file.arrayBuffer();
   const wb=XLSX.read(data,{type:'array',raw:true,cellDates:false});
@@ -241,8 +241,8 @@ async function readWorkbook(file) {
     const matrix=XLSX.utils.sheet_to_json(ws,{header:1,defval:null,raw:true,blankrows:false});
     if(!matrix.length) continue;
     const {headers,rows}=matrixToRows(matrix);
-    const cls=classifySheet(headers,file.name);
-    out.push({fileName:file.name,sheetName,headers,rows,...cls,technology:technologyFromName(file.name)});
+    const cls=classifySheet(headers,sourceName);
+    out.push({fileName:sourceName,sheetName,headers,rows,...cls,technology:technologyFromName(sourceName)});
   }
   return out;
 }
@@ -307,33 +307,99 @@ async function expandArchive(file) {
   }
 }
 
+function fileSourceName(file) {
+  return normalizeSpaces(file?._agroRelativePath || file?.webkitRelativePath || file?.name || '');
+}
+
+async function collectDroppedFiles(dataTransfer) {
+  const out=[];
+  const items=[...(dataTransfer?.items || [])];
+
+  async function walkHandle(handle, path='') {
+    if(!handle) return;
+    if(handle.kind==='file') {
+      const file=await handle.getFile();
+      try { Object.defineProperty(file,'_agroRelativePath',{value:`${path}${file.name}`, configurable:true}); } catch { file._agroRelativePath=`${path}${file.name}`; }
+      out.push(file);
+      return;
+    }
+    if(handle.kind==='directory') {
+      for await (const child of handle.values()) await walkHandle(child, `${path}${handle.name}/`);
+    }
+  }
+
+  function walkEntry(entry, path='') {
+    return new Promise((resolve,reject)=>{
+      if(entry.isFile) {
+        entry.file(file=>{
+          try { Object.defineProperty(file,'_agroRelativePath',{value:`${path}${file.name}`, configurable:true}); } catch { file._agroRelativePath=`${path}${file.name}`; }
+          out.push(file); resolve();
+        },reject);
+      } else if(entry.isDirectory) {
+        const reader=entry.createReader(); const all=[];
+        const readBatch=()=>reader.readEntries(async entries=>{
+          if(!entries.length) {
+            try { for(const child of all) await walkEntry(child,`${path}${entry.name}/`); resolve(); } catch(err){ reject(err); }
+          } else { all.push(...entries); readBatch(); }
+        },reject);
+        readBatch();
+      } else resolve();
+    });
+  }
+
+  if(items.length) {
+    for(const item of items) {
+      try {
+        if(typeof item.getAsFileSystemHandle==='function') {
+          const handle=await item.getAsFileSystemHandle();
+          if(handle) { await walkHandle(handle); continue; }
+        }
+        if(typeof item.webkitGetAsEntry==='function') {
+          const entry=item.webkitGetAsEntry();
+          if(entry) { await walkEntry(entry); continue; }
+        }
+        const f=item.getAsFile?.(); if(f) out.push(f);
+      } catch(err) {
+        const f=item.getAsFile?.(); if(f) out.push(f);
+      }
+    }
+  }
+  if(!out.length) out.push(...[...(dataTransfer?.files || [])]);
+  return out;
+}
+
 async function addFiles(fileList) {
   const incoming=[...fileList];
   for(const file of incoming) {
-    const originalKey=`${file.name}|${file.size}|${file.lastModified}`;
+    const sourceName=fileSourceName(file) || file.name;
+    if(!isArchiveFile(file.name) && !isWorkbookFile(file.name)) continue;
+    const originalKey=`${sourceName}|${file.size}|${file.lastModified}`;
     if(state.files.some(f=>f.key===originalKey)) continue;
     if(isArchiveFile(file.name)) {
-      state.files.push({key:originalKey,name:file.name,size:file.size,type:'archive',status:'Szukam Exceli w archiwum…'}); renderFiles();
+      state.files.push({key:originalKey,name:sourceName,size:file.size,type:'archive',status:'Szukam Exceli w archiwum…'}); renderFiles();
       const inside=await expandArchive(file);
       const rec=state.files.find(f=>f.key===originalKey);
       rec.status=inside.length ? `${inside.length} plik${inside.length===1?'':'i'} Excel/CSV z archiwum` : 'Brak odczytanych Exceli';
-      for(const sub of inside) await ingestFile(sub, `${file.name} → `);
-    } else await ingestFile(file);
+      for(const sub of inside) {
+        const inner=sub.name.includes('__') ? sub.name.split('__').slice(1).join('__') : sub.name;
+        await ingestFile(sub, `${sourceName} → ${inner}`);
+      }
+    } else await ingestFile(file, sourceName);
   }
   saveDb(); renderFiles(); renderWarnings(); updateProjectDisplay();
 }
-async function ingestFile(file, prefix='') {
-  const key=`${prefix}${file.name}|${file.size}|${file.lastModified}`;
+async function ingestFile(file, sourceName=fileSourceName(file)||file.name) {
+  const key=`${sourceName}|${file.size}|${file.lastModified}`;
   if(state.files.some(f=>f.key===key)) return;
-  const rec={key,name:`${prefix}${file.name}`,size:file.size,type:'pending',status:'Odczyt…'}; state.files.push(rec); renderFiles();
+  const rec={key,name:sourceName,size:file.size,type:'pending',status:'Odczyt…'}; state.files.push(rec); renderFiles();
   try {
-    const sets=await readWorkbook(file);
+    const sets=await readWorkbook(file, sourceName);
     const known=sets.filter(x=>x.kind!=='unknown');
     state.datasets.push(...known);
     const kinds=[...new Set(known.map(x=>x.kind))]; rec.type=kinds.length===1?kinds[0]:(known.length?'mixed':'error');
     rec.status=known.length ? known.map(x=>`${x.label}: ${x.rows.length}`).join(' · ') : 'Brak rozpoznanych danych';
     for(const ds of known) learnFromDataset(ds);
-  } catch(err) { rec.type='error'; rec.status=err.message; state.warnings.push(`${file.name}: ${err.message}`); }
+  } catch(err) { rec.type='error'; rec.status=err.message; state.warnings.push(`${sourceName}: ${err.message}`); }
 }
 
 function learnFromDataset(ds) {
@@ -761,7 +827,7 @@ function renderDiagnostics() {
   const transferred=[]; for(const [code,r] of a.res.entries()) if([...r.origins].some(x=>x!==a.project)) transferred.push(`${code} — ${r.name}: źródło ${[...r.origins].join(', ')}`);
   if(transferred.length) chunks.push(`<div class="diag-section"><h4>Zasoby pochodzące z innych zleceń</h4><div class="diag-list">${transferred.slice(0,80).map(x=>`• ${esc(x)}`).join('<br>')}${transferred.length>80?`<br>… i ${transferred.length-80} kolejnych`:''}</div></div>`);
   if(a.kplwTotal) chunks.push(`<div class="diag-section"><h4>Kompletacja</h4><div class="diag-list">W plikach znaleziono KPLW dla projektu. Zgodnie z logiką raportu przed kompletacją te ilości <strong>nie są dodawane</strong> do bilansu.</div></div>`);
-  chunks.push(`<div class="diag-section"><h4>Założenia wersji v0.3</h4><div class="diag-list">• ZKP/KZKP i RW są liczone z pola „Zmiana ilości”.<br>• ZDWP jest informacyjne — nie jest dodawane do stanu projektu.<br>• Zasoby są rozdzielane na „Produkcja wyposażenia” i „Materiały wyposażenia”. Bieżący projekt jest brany z NrZAMP (kolumna L), a Projekt26 zostaje jako informacja o pochodzeniu — dzięki temu widać przesunięcia z innych projektów.<br>• Blachy: konstrukcja daje masę netto detali; aplikacja przypisuje indeksy po gatunku i grubości, ale nie udaje, że zna prawidłowy odpad technologiczny bez rozkroju.<br>• Raport główny i eksport pokazują wyłącznie różnice / pozycje wymagające reakcji.<br>• Niedobór jest traktowany rygorystycznie; niewielka nadwyżka jest tolerowana zależnie od kategorii i jednostki. Dla złącznych: do 5%, minimum 2 szt., maksymalnie 10 szt. nadwyżki.</div></div>`);
+  chunks.push(`<div class="diag-section"><h4>Założenia wersji v0.6</h4><div class="diag-list">• ZKP/KZKP i RW są liczone z pola „Zmiana ilości”.<br>• ZDWP jest informacyjne — nie jest dodawane do stanu projektu.<br>• Zasoby są rozdzielane na „Produkcja wyposażenia” i „Materiały wyposażenia”. Bieżący projekt jest brany z NrZAMP (kolumna L), a Projekt26 zostaje jako informacja o pochodzeniu — dzięki temu widać przesunięcia z innych projektów.<br>• Blachy: konstrukcja daje masę netto detali; aplikacja przypisuje indeksy po gatunku i grubości, ale nie udaje, że zna prawidłowy odpad technologiczny bez rozkroju.<br>• Wszystkie dostarczone zestawienia konstrukcyjne są addytywne. Foldery datowane używane jako „zwiększenia ilości” są sumowane z zestawieniem bazowym, a nie zastępują go.<br>• Raport główny i eksport pokazują wyłącznie różnice / pozycje wymagające reakcji.<br>• Niedobór jest traktowany rygorystycznie; niewielka nadwyżka jest tolerowana zależnie od kategorii i jednostki. Dla złącznych: do 5%, minimum 2 szt., maksymalnie 10 szt. nadwyżki.</div></div>`);
   el.diagnostics.innerHTML=chunks.join('');
 }
 
@@ -792,11 +858,13 @@ async function importDb(file) {
 }
 
 el.projectInput.addEventListener('input',updateProjectDisplay);
-el.dropzone.addEventListener('click',()=>el.fileInput.click()); el.dropzone.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' ')el.fileInput.click()});
+el.dropzone.addEventListener('click',e=>{if(e.target.closest('button'))return;el.fileInput.click()}); el.dropzone.addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&!e.target.closest('button'))el.fileInput.click()});
 el.fileInput.addEventListener('change',e=>addFiles(e.target.files));
+el.folderBtn?.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();el.folderInput.click()});
+el.folderInput?.addEventListener('change',e=>addFiles(e.target.files));
 ['dragenter','dragover'].forEach(ev=>el.dropzone.addEventListener(ev,e=>{e.preventDefault();el.dropzone.classList.add('drag')}));
 ['dragleave','drop'].forEach(ev=>el.dropzone.addEventListener(ev,e=>{e.preventDefault();el.dropzone.classList.remove('drag')}));
-el.dropzone.addEventListener('drop',e=>addFiles(e.dataTransfer.files));
+el.dropzone.addEventListener('drop',async e=>{const files=await collectDroppedFiles(e.dataTransfer);await addFiles(files)});
 el.clearBtn.addEventListener('click',()=>{state.datasets=[];state.files=[];state.warnings=[];state.analysis=null;renderFiles();renderWarnings();el.results.classList.add('hidden');el.exportBtn.disabled=true;updateProjectDisplay();});
 el.analyzeBtn.addEventListener('click',analyze); el.exportBtn.addEventListener('click',exportReport); el.exportDbBtn.addEventListener('click',exportDb); el.importDbInput.addEventListener('change',e=>e.target.files[0]&&importDb(e.target.files[0]));
 [el.showExtras].filter(Boolean).forEach(x=>x.addEventListener('change',renderTable)); el.searchInput.addEventListener('input',renderTable); el.laser3dMode.addEventListener('change',()=>{if(state.analysis)analyze()});

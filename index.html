@@ -61,10 +61,12 @@
 
       <div id="dropzone" class="dropzone" tabindex="0">
         <input id="fileInput" type="file" multiple accept=".xlsx,.xls,.xlsb,.csv,.7z,.zip,.rar,.tar,.tgz,.gz" hidden />
+        <input id="folderInput" type="file" multiple webkitdirectory directory hidden />
         <div class="drop-icon">＋</div>
         <strong>Przeciągnij pliki tutaj</strong>
         <span>lub kliknij, aby wybrać XLSX / XLS / CSV / ZIP / 7z / RAR</span>
-        <small>Archiwa są czytane bezpośrednio w przeglądarce. Aplikacja wyciąga z nich tylko pliki Excel/CSV — nie musisz ich ręcznie rozpakowywać.</small>
+        <div class="drop-actions"><button id="folderBtn" type="button" class="btn secondary small">Wybierz cały folder projektu</button></div>
+        <small>Możesz też przeciągnąć cały folder projektu razem z podfolderami. Archiwa są czytane bezpośrednio; aplikacja wyciąga z nich tylko pliki Excel/CSV. Foldery datowane ze zwiększeniami ilości są sumowane z zestawieniem bazowym.</small>
       </div>
 
       <div id="fileSummary" class="file-summary hidden"></div>
@@ -131,10 +133,10 @@
   </main>
 
   <footer>
-    Wersja próbna v0.5 — poprawione rozpiski: Ilość × (długość handlowa − odpad), Laser 3D 5800→6000.
+    Wersja próbna v0.6 — cały folder projektu + podfoldery; zwiększenia ilości są sumowane z zestawieniem bazowym.
   </footer>
 
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
-  <script type="module" src="app.js?v=5"></script>
+  <script type="module" src="app.js?v=6"></script>
 </body>
 </html>
