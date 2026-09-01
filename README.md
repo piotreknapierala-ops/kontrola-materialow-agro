@@ -1,4 +1,4 @@
-# AGRO — kontrola materiałowa projektu (v0.7)
+# AGRO — kontrola materiałowa projektu (v0.8)
 
 Statyczna aplikacja przeglądarkowa do raportu materiałowego przed kompletacją KPLW.
 
@@ -58,3 +58,10 @@ Dane z wgrywanych arkuszy są analizowane lokalnie w przeglądarce. Aplikacja ni
 - Dopasowanie bazuje przede wszystkim na grubości i rodzinie/gatunku materiału; różne formaty arkuszy są sumowane.
 - Jeśli brak dokładnego gatunku, ale pod projektem użyto zamiennika stali czarnej tej samej grubości (np. S355J2 zamiast S235), aplikacja przypisuje indeks i dodaje ostrzeżenie o zamienniku.
 - Dzięki temu pozycje blach nie zostają jako „—” do ręcznego przypisywania.
+
+
+## v0.8 — rozdzielenie Produkcja / Materiały wyposażenia
+- Do BOM porównywane jest wyłącznie `ZKP + RW + Produkcja wyposażenia`.
+- `Materiały wyposażenia` to rezerwa przypisana do projektu i nie tworzy nadwyżki.
+- Jeśli ilość do BOM jest za mała, rezerwa może ją pokryć; raport pokazuje `DO PRZESUNIĘCIA Z MATERIAŁÓW` i ilość potrzebną do przesunięcia.
+- Pozycje, gdzie BOM = ilość na Produkcji, są `OK` i znikają z raportu nawet jeśli na `Materiały wyposażenia` jest dodatkowy zapas.

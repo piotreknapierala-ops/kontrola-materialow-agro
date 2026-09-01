@@ -51,7 +51,7 @@ function *allItemEntries() {
 }
 async function loadMasterItems() {
   try {
-    const r=await fetch(`indeksy.json?v=3`,{cache:'no-store'});
+    const r=await fetch(`indeksy.json?v=8`,{cache:'no-store'});
     if(!r.ok) throw new Error(`HTTP ${r.status}`);
     state.masterItems=await r.json();
     state.masterLoaded=true;
@@ -757,7 +757,7 @@ function sourceValues(codeOrCodes, sys, res) {
   for(const c of codes) {
     const s=sys.get(c), r=res.get(c); if(s){zkp+=s.zkp;rw+=s.rw;zdwp+=s.zdwp;kplw+=s.kplw;unit=unit||s.unit;name=name||s.name;} if(r){prod+=r.prod;mat+=r.mat;other+=r.other;unit=unit||r.unit;name=name||r.name;r.origins.forEach(x=>origins.add(x));}
   }
-  return {zkp,rw,zdwp,kplw,prod,mat,other,total:zkp+rw+prod+mat,origins:[...origins],unit,name};
+  return {zkp,rw,zdwp,kplw,prod,mat,other,total:zkp+rw+prod,available:zkp+rw+prod+mat,origins:[...origins],unit,name};
 }
 function normalizedUnit(u='') { return normalizeSpaces(u).toLowerCase().replace('szt.','szt'); }
 function isFastener(d) {
@@ -788,19 +788,38 @@ function toleranceDescription(d) {
 function classifyResult(d, v) {
   if(d.outsource) return {status:'OUTSOURCING 3D',class:'info',delta:null,withinTolerance:false};
   if(d.expected===null || d.expected===undefined || !Number.isFinite(d.expected)) return {status:'BRAK PRZELICZNIKA',class:'warn',delta:null,withinTolerance:false};
-  const delta=v.total-d.expected, lowTol=shortageTolerance(d), highTol=surplusTolerance(d);
+
+  // Do BOM porównujemy wyłącznie ilość już rozchodowaną / skierowaną na produkcję:
+  // ZKP + RW + Produkcja wyposażenia. "Materiały wyposażenia" to rezerwa i nie tworzy nadwyżki.
+  const active=v.total;
+  const reserve=Math.max(0, Number(v.mat)||0);
+  const delta=active-d.expected, lowTol=shortageTolerance(d), highTol=surplusTolerance(d);
+  const shortage=Math.max(0, -delta);
+  const transfer=Math.min(reserve, shortage);
+  const remaining=Math.max(0, shortage-transfer);
+
   if(d.technology==='Laser 2D / blachy') {
-    if(delta < -lowTol) return {status:v.zdwp>0?'BRAK MIN. / ZDWP':'BRAK MINIMUM',class:'bad',delta,withinTolerance:false,lowTol,highTol};
-    if(delta <= Math.max(highTol, Math.abs(d.expected)*0.20)) return {status:'OK',class:'ok',delta,withinTolerance:true,lowTol,highTol};
-    return {status:'DO WERYFIKACJI BLACHY',class:'warn',delta,withinTolerance:false,lowTol,highTol};
+    if(delta < -lowTol) {
+      if(reserve>lowTol && remaining<=lowTol) return {status:'DO PRZESUNIĘCIA Z MATERIAŁÓW',class:'info',delta,withinTolerance:false,lowTol,highTol,transfer,remaining};
+      if(reserve>lowTol && remaining>lowTol) return {status:v.zdwp>0?'BRAK MIN. PO PRZESUNIĘCIU / ZDWP':'BRAK MINIMUM PO PRZESUNIĘCIU',class:'bad',delta,withinTolerance:false,lowTol,highTol,transfer,remaining};
+      return {status:v.zdwp>0?'BRAK MIN. / ZDWP':'BRAK MINIMUM',class:'bad',delta,withinTolerance:false,lowTol,highTol,transfer,remaining};
+    }
+    if(delta <= Math.max(highTol, Math.abs(d.expected)*0.20)) return {status:'OK',class:'ok',delta,withinTolerance:true,lowTol,highTol,transfer:0,remaining:0};
+    return {status:'DO WERYFIKACJI BLACHY',class:'warn',delta,withinTolerance:false,lowTol,highTol,transfer:0,remaining:0};
   }
+
   if(delta < -lowTol) {
-    if(v.zdwp>0 && v.total<=lowTol && v.zdwp>=Math.abs(delta)-lowTol) return {status:'ZAMÓWIONE / OCZEKUJE',class:'info',delta,withinTolerance:false,lowTol,highTol};
-    if(v.zdwp>0) return {status:'BRAK / JEST ZDWP',class:'bad',delta,withinTolerance:false,lowTol,highTol};
-    return {status:'BRAK',class:'bad',delta,withinTolerance:false,lowTol,highTol};
+    if(reserve>lowTol && remaining<=lowTol) return {status:'DO PRZESUNIĘCIA Z MATERIAŁÓW',class:'info',delta,withinTolerance:false,lowTol,highTol,transfer,remaining};
+    if(reserve>lowTol && remaining>lowTol) {
+      if(v.zdwp>0) return {status:'BRAK PO PRZESUNIĘCIU / JEST ZDWP',class:'bad',delta,withinTolerance:false,lowTol,highTol,transfer,remaining};
+      return {status:'BRAK PO PRZESUNIĘCIU',class:'bad',delta,withinTolerance:false,lowTol,highTol,transfer,remaining};
+    }
+    if(v.zdwp>0 && active<=lowTol && v.zdwp>=shortage-lowTol) return {status:'ZAMÓWIONE / OCZEKUJE',class:'info',delta,withinTolerance:false,lowTol,highTol,transfer:0,remaining:shortage};
+    if(v.zdwp>0) return {status:'BRAK / JEST ZDWP',class:'bad',delta,withinTolerance:false,lowTol,highTol,transfer:0,remaining:shortage};
+    return {status:'BRAK',class:'bad',delta,withinTolerance:false,lowTol,highTol,transfer:0,remaining:shortage};
   }
-  if(delta > highTol) return {status:'NADWYŻKA',class:'warn',delta,withinTolerance:false,lowTol,highTol};
-  return {status:'OK',class:'ok',delta,withinTolerance:true,lowTol,highTol};
+  if(delta > highTol) return {status:'NADWYŻKA',class:'warn',delta,withinTolerance:false,lowTol,highTol,transfer:0,remaining:0};
+  return {status:'OK',class:'ok',delta,withinTolerance:true,lowTol,highTol,transfer:0,remaining:0};
 }
 
 function analyze() {
@@ -828,6 +847,9 @@ function analyze() {
     const notes=[...(d.notes||[])]; if(d.conversion)notes.push(`Przeliczenie: ${d.conversion}.`);
     if(v.origins.length && v.origins.some(x=>x!==project)) notes.push(`Pochodzenie zasobu: ${v.origins.join(', ')} — materiał może pochodzić z innego zlecenia.`);
     if(v.kplw) notes.push(`W danych występuje KPLW: ${fmt(v.kplw,v.unit)}. KPLW nie jest dodawane do raportu przed kompletacją.`);
+    if(result.transfer>0) notes.push(`Do przesunięcia z „Materiały wyposażenia”: ${fmt(result.transfer,d.unit)}.`);
+    if(result.remaining>0 && result.transfer>0) notes.push(`Po wykorzystaniu rezerwy nadal brakuje: ${fmt(result.remaining,d.unit)}.`);
+    if(v.mat>0 && result.status==='OK') notes.push(`Rezerwa na „Materiały wyposażenia”: ${fmt(v.mat,d.unit)} — nie jest doliczana do nadwyżki.`);
     if(result.status==='NADWYŻKA') notes.push(`Dopuszczalna nadwyżka: ${fmt(result.highTol,d.unit)} (${toleranceDescription(d)}).`);
     const fallbackName = codes.map(c=>itemRecord(c)?.name||'').filter(Boolean).join(' / ');
     report.push({...d,...v,
@@ -897,7 +919,7 @@ function renderDiagnostics() {
   const transferred=[]; for(const [code,r] of a.res.entries()) if([...r.origins].some(x=>x!==a.project)) transferred.push(`${code} — ${r.name}: źródło ${[...r.origins].join(', ')}`);
   if(transferred.length) chunks.push(`<div class="diag-section"><h4>Zasoby pochodzące z innych zleceń</h4><div class="diag-list">${transferred.slice(0,80).map(x=>`• ${esc(x)}`).join('<br>')}${transferred.length>80?`<br>… i ${transferred.length-80} kolejnych`:''}</div></div>`);
   if(a.kplwTotal) chunks.push(`<div class="diag-section"><h4>Kompletacja</h4><div class="diag-list">W plikach znaleziono KPLW dla projektu. Zgodnie z logiką raportu przed kompletacją te ilości <strong>nie są dodawane</strong> do bilansu.</div></div>`);
-  chunks.push(`<div class="diag-section"><h4>Założenia wersji v0.7</h4><div class="diag-list">• ZKP/KZKP i RW są liczone z pola „Zmiana ilości”.<br>• ZDWP jest informacyjne — nie jest dodawane do stanu projektu.<br>• Zasoby są rozdzielane na „Produkcja wyposażenia” i „Materiały wyposażenia”. Bieżący projekt jest brany z NrZAMP (kolumna L), a Projekt26 zostaje jako informacja o pochodzeniu — dzięki temu widać przesunięcia z innych projektów.<br>• Blachy Laser 2D: aplikacja najpierw buduje zapotrzebowanie z konstrukcji, a następnie automatycznie przypisuje indeksy faktycznie użyte pod projektem po grubości i materiale. Różne formaty arkuszy są sumowane w kg. Gdy pod projektem użyto zamiennika gatunkowego (np. S355J2 zamiast S235), indeks jest przypisany automatycznie, ale raport zawiera ostrzeżenie o zamienniku.<br>• Wszystkie dostarczone zestawienia konstrukcyjne są addytywne. Foldery datowane używane jako „zwiększenia ilości” są sumowane z zestawieniem bazowym, a nie zastępują go.<br>• Raport główny i eksport pokazują wyłącznie różnice / pozycje wymagające reakcji.<br>• Niedobór jest traktowany rygorystycznie; niewielka nadwyżka jest tolerowana zależnie od kategorii i jednostki. Dla złącznych: do 5%, minimum 2 szt., maksymalnie 10 szt. nadwyżki.</div></div>`);
+  chunks.push(`<div class="diag-section"><h4>Założenia wersji v0.8</h4><div class="diag-list">• ZKP/KZKP i RW są liczone z pola „Zmiana ilości”.<br>• ZDWP jest informacyjne — nie jest dodawane do stanu projektu.<br>• Zasoby są rozdzielane na „Produkcja wyposażenia” i „Materiały wyposażenia”. Do BOM porównujemy tylko ZKP + RW + Produkcja wyposażenia. „Materiały wyposażenia” są rezerwą: nie tworzą nadwyżki, ale mogą pokryć niedobór i wtedy raport pokazuje „DO PRZESUNIĘCIA Z MATERIAŁÓW”. Bieżący projekt jest brany z NrZAMP (kolumna L), a Projekt26 zostaje jako informacja o pochodzeniu.<br>• Blachy Laser 2D: aplikacja najpierw buduje zapotrzebowanie z konstrukcji, a następnie automatycznie przypisuje indeksy faktycznie użyte pod projektem po grubości i materiale. Różne formaty arkuszy są sumowane w kg. Gdy pod projektem użyto zamiennika gatunkowego (np. S355J2 zamiast S235), indeks jest przypisany automatycznie, ale raport zawiera ostrzeżenie o zamienniku.<br>• Wszystkie dostarczone zestawienia konstrukcyjne są addytywne. Foldery datowane używane jako „zwiększenia ilości” są sumowane z zestawieniem bazowym, a nie zastępują go.<br>• Raport główny i eksport pokazują wyłącznie różnice / pozycje wymagające reakcji.<br>• Niedobór jest traktowany rygorystycznie; niewielka nadwyżka jest tolerowana zależnie od kategorii i jednostki. Dla złącznych: do 5%, minimum 2 szt., maksymalnie 10 szt. nadwyżki.</div></div>`);
   el.diagnostics.innerHTML=chunks.join('');
 }
 
@@ -906,7 +928,7 @@ function exportReport() {
   const all=differenceRows(true);
   const data=all.map(r=>({
     'Projekt':a.project,'Nazwa projektu':a.projectName,'Technologia':r.technology,'Indeks':r.code,'Materiał':r.name,'Kategoria':r.category||'','JM systemowa':r.unit,
-    'Konstrukcja':r.expected,'ZKP':r.zkp,'RW':r.rw,'Produkcja wyposażenia':r.prod,'Materiały wyposażenia':r.mat,'Razem w projekcie':r.total,'ZDWP':r.zdwp,'Różnica':r.delta,'Status':r.status,'Uwagi':(r.notes||[]).join(' | '),
+    'Konstrukcja':r.expected,'ZKP':r.zkp,'RW':r.rw,'Produkcja wyposażenia':r.prod,'Materiały wyposażenia':r.mat,'Razem do BOM (ZKP+RW+Produkcja)':r.total,'ZDWP':r.zdwp,'Różnica':r.delta,'Status':r.status,'Uwagi':(r.notes||[]).join(' | '),
     'Pochodzenie NrZAMP':(r.origins||[]).join(', ')
   }));
   const wb=XLSX.utils.book_new(); const ws=XLSX.utils.json_to_sheet(data); ws['!cols']=[{wch:12},{wch:28},{wch:18},{wch:14},{wch:52},{wch:12},{wch:13},{wch:10},{wch:10},{wch:18},{wch:19},{wch:15},{wch:12},{wch:12},{wch:25},{wch:70},{wch:25}];
